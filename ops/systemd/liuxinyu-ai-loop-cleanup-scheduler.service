@@ -1,0 +1,19 @@
+[Unit]
+Description=Liuxinyu AI loop nightly cleanup scheduler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/liuxinyu-ai-loop
+Environment=BARRY_VIDEO_AUTH_HOME=/root/.liuxinyu-ai-loop
+Environment=BARRY_FEISHU_ENV_FILE=/root/.liuxinyu-ai-loop/feishu.env
+Environment=BARRY_VIDEO_NOVEL_DOWNLOAD_DIR=/root/Downloads/liuxinyu-ai-loop-novels
+Environment=BARRY_VIDEO_NOVEL_TMP_DIR=/tmp/liuxinyu-ai-loop-novels
+Environment=BARRY_VIDEO_NOVEL_WORK_DIR=/tmp/liuxinyu-ai-loop-novels-work
+ExecStart=/opt/liuxinyu-ai-loop/scripts/run-server-daily-cleanup.sh
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

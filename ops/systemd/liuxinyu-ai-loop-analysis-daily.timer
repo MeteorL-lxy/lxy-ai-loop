@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Liuxinyu AI loop analysis daily at 10:00 every day
+
+[Timer]
+OnCalendar=*-*-* 10:00:00
+Persistent=true
+Unit=liuxinyu-ai-loop-analysis-daily.service
+
+[Install]
+WantedBy=timers.target

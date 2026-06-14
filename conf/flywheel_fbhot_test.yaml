@@ -1,0 +1,74 @@
+{
+  "local_db": {
+    "path": "runtime/flywheel-experiments/fbhot-test/flywheel.db"
+  },
+  "flywheel": {
+    "candidate_pool_size": 30,
+    "candidate_page_size": 15,
+    "default_platform": "",
+    "default_language": "2",
+    "candidate_language_mode": "all",
+    "candidate_languages": [],
+    "default_order": "publish_at"
+  },
+  "realtime_rank": {
+    "enabled": true,
+    "base_url": "https://test-api-ai-guangdada.inbeidou.cn",
+    "timeout_seconds": 20,
+    "max_candidates": 30
+  },
+  "scoring": {
+    "weights": {
+      "alpha": 0.2,
+      "beta": 0.2,
+      "gamma": 0.2,
+      "delta": 0.15,
+      "epsilon": 0.1,
+      "zeta": 0.15,
+      "ucb_c": 1.0
+    }
+  },
+  "selection": {
+    "tier_quota": {
+      "A": 0.4,
+      "B": 0.25,
+      "C": 0.25,
+      "D": 0.1
+    },
+    "recent_hard_exclusion_rounds": 20,
+    "recent_hard_exclusion_days": 7
+  },
+  "clipping": {
+    "default_episode_order": 1,
+    "require_third_serial_id": true,
+    "cut_type": "high_cut",
+    "duration": "auto",
+    "output_count": 1,
+    "source_prepare_retry_count": 1,
+    "target_width": 720,
+    "target_height": 1280,
+    "submit_timeout": 90,
+    "task_timeout": 1800,
+    "poll_interval": 3,
+    "dedup_pool": [
+      "common_deduplication",
+      "apply_pip",
+      "apply_rotate",
+      "apply_scale"
+    ]
+  },
+  "runtime": {
+    "default_publish_platforms": [],
+    "clip_execute_concurrency": 5,
+    "publish_execute_concurrency": 3,
+    "collect_wait_seconds": 180,
+    "collect_poll_interval": 15,
+    "cleanup_local_clips_after_publish": true
+  },
+  "paths": {
+    "logs_dir": "runtime/flywheel-experiments/fbhot-test/logs",
+    "source_dir": "runtime/flywheel-experiments/fbhot-test/source",
+    "clipped_dir": "runtime/flywheel-experiments/fbhot-test/clipped",
+    "covers_dir": "runtime/flywheel-experiments/fbhot-test/covers"
+  }
+}

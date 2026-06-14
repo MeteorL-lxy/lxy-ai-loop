@@ -1,0 +1,62 @@
+{
+  "local_db": {
+    "path": "runtime/flywheel-experiments/yourchannel/flywheel.db"
+  },
+  "flywheel": {
+    "candidate_pool_size": 80,
+    "candidate_page_size": 50,
+    "default_platform": "yourchannel_drama",
+    "default_language": "",
+    "candidate_language_mode": "all",
+    "candidate_languages": [],
+    "default_order": "publish_at"
+  },
+  "realtime_rank": {
+    "enabled": false,
+    "base_url": "https://test-api-ai-guangdada.inbeidou.cn",
+    "timeout_seconds": 20,
+    "max_candidates": 0
+  },
+  "scoring": {
+    "weights": {
+      "alpha": 0.2,
+      "beta": 0.2,
+      "gamma": 0.2,
+      "delta": 0.15,
+      "epsilon": 0.1,
+      "zeta": 0.15,
+      "ucb_c": 1.0
+    }
+  },
+  "selection": {
+    "recent_hard_exclusion_rounds": 20,
+    "recent_hard_exclusion_days": 7
+  },
+  "clipping": {
+    "default_episode_order": 1,
+    "require_third_serial_id": true,
+    "cut_type": "high_cut",
+    "duration": "18",
+    "output_count": 1,
+    "source_prepare_retry_count": 1,
+    "target_width": 720,
+    "target_height": 1280,
+    "submit_timeout": 90,
+    "task_timeout": 1800,
+    "poll_interval": 3
+  },
+  "runtime": {
+    "default_publish_platforms": [],
+    "clip_execute_concurrency": 3,
+    "publish_execute_concurrency": 2,
+    "collect_wait_seconds": 180,
+    "collect_poll_interval": 15,
+    "cleanup_local_clips_after_publish": true
+  },
+  "paths": {
+    "logs_dir": "runtime/flywheel-experiments/yourchannel/logs",
+    "source_dir": "runtime/flywheel-experiments/yourchannel/source",
+    "clipped_dir": "runtime/flywheel-experiments/yourchannel/clipped",
+    "covers_dir": "runtime/flywheel-experiments/yourchannel/covers"
+  }
+}

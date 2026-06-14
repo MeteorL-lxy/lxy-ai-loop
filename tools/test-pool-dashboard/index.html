@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Loop 个人数据看板</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="top-bar">
+      <div class="brand-block">
+        <div class="brand-title">AI Loop</div>
+        <span class="brand-badge">个人数据看板</span>
+      </div>
+      <div class="top-meta">
+        <span class="meta-pill"><span class="meta-dot"></span><strong id="status-text">已连接</strong></span>
+        <span class="meta-pill">模式 <strong id="mode-text">本地服务</strong></span>
+        <span class="meta-pill">数据库 <strong id="db-path">-</strong></span>
+        <span class="meta-pill">最后更新 <strong id="last-updated">-</strong></span>
+      </div>
+      <div class="top-actions">
+        <button id="refresh-btn" class="primary-btn">刷新</button>
+      </div>
+    </header>
+
+    <section class="panel">
+      <div class="section-head">
+        <h2>整体总览</h2>
+      </div>
+      <div id="overall-grid" class="metric-grid metric-grid-8"></div>
+    </section>
+
+    <section class="panel">
+      <div class="section-head section-head-inline">
+        <h2>今日概览</h2>
+        <span id="today-meta" class="section-meta">每30秒自动刷新一次 最后更新 -</span>
+      </div>
+      <div id="today-grid" class="metric-grid metric-grid-7"></div>
+    </section>
+
+    <section class="panel">
+      <div class="section-head section-head-inline">
+        <h2>线路实时深挖</h2>
+        <span class="section-meta">每30秒刷新一次</span>
+      </div>
+      <div id="line-grid" class="line-scroll"></div>
+    </section>
+
+    <section class="panel" id="top-play-panel">
+      <div class="section-head">
+        <h2>今日播放 Top 5</h2>
+      </div>
+      <div id="top-play-grid" class="top-play-scroll"></div>
+    </section>
+
+    <details class="panel fold-panel">
+      <summary>
+        <span>历史趋势判断</span>
+        <small>默认收起，需要时再展开</small>
+      </summary>
+      <div class="fold-body">
+        <div id="history-block" class="empty-state">当前还没有接回 ai-loop-reporting 的历史趋势逻辑。</div>
+      </div>
+    </details>
+
+    <details class="panel fold-panel">
+      <summary>
+        <span>账号池分组</span>
+        <small>默认收起，需要时再展开看用途说明</small>
+      </summary>
+      <div class="fold-body">
+        <div class="table-wrap">
+          <table class="data-table compact">
+            <thead>
+              <tr>
+                <th>账号池</th>
+                <th>用途说明</th>
+                <th>平台</th>
+                <th>数量</th>
+              </tr>
+            </thead>
+            <tbody id="account-groups-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </details>
+
+    <details class="panel fold-panel" id="rounds-panel">
+      <summary>
+        <span>轮次归档明细</span>
+        <small>默认收起，需要时再展开查历史轮次</small>
+      </summary>
+      <div class="fold-body">
+        <div class="filters">
+          <select id="day-filter"><option value="">全部日期</option></select>
+          <select id="mode-filter"><option value="">全部模式</option></select>
+          <select id="line-filter"><option value="">全部线路</option></select>
+          <select id="status-filter"><option value="">全部状态</option></select>
+          <input id="search-input" type="text" placeholder="搜索轮次 / 备注 / 账号池" />
+          <button id="search-btn" class="ghost-btn">查询</button>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>模式</th>
+                <th>线路</th>
+                <th>轮次</th>
+                <th>请求</th>
+                <th>成功</th>
+                <th>失败</th>
+                <th>未提交</th>
+                <th>状态</th>
+                <th>备注</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="rounds-tbody"></tbody>
+          </table>
+        </div>
+        <div class="pagination-bar">
+          <div id="rounds-page-info" class="pagination-info">尚未展开轮次明细</div>
+          <div class="pagination-actions">
+            <label class="page-size">
+              <span>每页</span>
+              <select id="page-size-select">
+                <option value="20">20</option>
+                <option value="50" selected>50</option>
+                <option value="100">100</option>
+              </select>
+            </label>
+            <button id="prev-page-btn" class="ghost-btn">上一页</button>
+            <button id="next-page-btn" class="ghost-btn">下一页</button>
+          </div>
+        </div>
+      </div>
+    </details>
+  </div>
+
+  <aside class="drawer" id="detail-drawer" aria-hidden="true">
+    <div class="drawer-mask" id="drawer-mask"></div>
+    <div class="drawer-panel">
+      <div class="drawer-head">
+        <div>
+          <h3 id="drawer-title">轮次详情</h3>
+          <p id="drawer-subtitle">-</p>
+        </div>
+        <button id="drawer-close" class="ghost-btn">关闭</button>
+      </div>
+      <div class="drawer-body">
+        <div id="detail-summary" class="detail-grid"></div>
+        <div class="table-wrap">
+          <table class="data-table compact">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>账号</th>
+                <th>剧目</th>
+                <th>来源</th>
+                <th>剪辑</th>
+                <th>状态</th>
+                <th>失败原因</th>
+              </tr>
+            </thead>
+            <tbody id="detail-items"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <script src="./app.js"></script>
+</body>
+</html>

@@ -1,0 +1,35 @@
+{
+  "serial_id_boosts": {},
+  "third_serial_id_boosts": {},
+  "app_id_boosts": {
+    "reelshort": 0.05,
+    "dramabox": 0.03
+  },
+  "fetch_source_boosts": {},
+  "title_keyword_boosts": [
+    {
+      "keyword": "revenge",
+      "boost": 0.12
+    },
+    {
+      "keyword": "ceo",
+      "boost": 0.1
+    },
+    {
+      "keyword": "alpha",
+      "boost": 0.1
+    },
+    {
+      "keyword": "wedding",
+      "boost": 0.08
+    },
+    {
+      "keyword": "betray",
+      "boost": 0.1
+    },
+    {
+      "keyword": "triplet",
+      "boost": 0.08
+    }
+  ]
+}

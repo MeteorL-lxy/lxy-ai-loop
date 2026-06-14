@@ -1,0 +1,79 @@
+{
+  "id": "barry-video",
+  "skills": [
+    "./skills"
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "pythonBin": {
+        "type": "string",
+        "default": "python3",
+        "description": "Python executable used to run the Inbeidou backend CLI."
+      },
+      "backendCli": {
+        "type": "string",
+        "default": "~/inbeidou_cli.py",
+        "description": "Absolute path to the existing inbeidou_cli.py backend script."
+      },
+      "flywheelCli": {
+        "type": "string",
+        "default": "",
+        "description": "Optional path to flywheel_cli.py for local video and automatic flywheel workflows."
+      },
+      "authToken": {
+        "type": "string",
+        "default": "",
+        "description": "Optional Inbeidou token passed to the backend as INBEIDOU_TOKEN."
+      },
+      "downloadDir": {
+        "type": "string",
+        "default": "~/Desktop",
+        "description": "Default output directory for downloaded clipped or translated videos."
+      },
+      "defaultAccountIds": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "description": "Optional default publish account IDs used when no accountIds are provided."
+      },
+      "defaultTeamIds": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "description": "Optional default publish team IDs used when no teamIds are provided."
+      },
+      "defaultPublishPlatform": {
+        "type": "string",
+        "enum": [
+          "TIKTOK",
+          "FACEBOOK",
+          "INSTAGRAM",
+          "YOUTUBE"
+        ],
+        "default": "FACEBOOK",
+        "description": "Default publish platform when team IDs are used."
+      },
+      "defaultDramaPlatform": {
+        "type": "string",
+        "default": "dramabox",
+        "description": "Default platform used for short drama discovery."
+      },
+      "defaultLanguage": {
+        "type": "string",
+        "default": "2",
+        "description": "Default language ID used for short drama discovery."
+      },
+      "defaultDramaOrder": {
+        "type": "string",
+        "default": "publish_at",
+        "description": "Default sort field used for short drama discovery."
+      }
+    }
+  }
+}

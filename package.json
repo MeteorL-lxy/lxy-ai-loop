@@ -1,0 +1,75 @@
+{
+  "name": "barry-video",
+  "version": "0.4.1",
+  "description": "Barry Video OpenClaw plugin for all Inbeidou creator workflows: account, credits, dramas, media, AI editing, and publishing.",
+  "type": "module",
+  "main": "./index.ts",
+  "exports": {
+    ".": {
+      "import": "./index.ts",
+      "default": "./index.ts"
+    }
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "install": {
+      "npmSpec": "barry-video",
+      "localPath": "extensions/barry-video",
+      "defaultChoice": "npm"
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/a77ming/barry-video.git"
+  },
+  "homepage": "https://github.com/a77ming/barry-video",
+  "bugs": {
+    "url": "https://github.com/a77ming/barry-video/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "sideEffects": false,
+  "funding": [
+    {
+      "type": "github",
+      "url": "https://github.com/a77ming"
+    }
+  ],
+  "files": [
+    "**/*",
+    "!**/.DS_Store",
+    "!*.tgz",
+    "!node_modules/**",
+    "!.git/**",
+    "!.claude/**"
+  ],
+  "bin": {
+    "barry-video": "bin/barry-video"
+  },
+  "scripts": {
+    "install:local": "./scripts/install-local.sh",
+    "mcp": "node scripts/mcp-server.mjs",
+    "package:release": "./scripts/package-release.sh",
+    "smoke": "./scripts/smoke-test.sh"
+  },
+  "keywords": [
+    "barry",
+    "openclaw",
+    "qclaw",
+    "inbeidou",
+    "creator",
+    "dramabox",
+    "clip",
+    "translate",
+    "publish",
+    "facebook"
+  ],
+  "license": "UNLICENSED"
+}

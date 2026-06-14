@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Barry Facebook analysis daily at 10:00 every day
+
+[Timer]
+OnCalendar=*-*-* 10:00:00
+Persistent=true
+Unit=barry-facebook-analysis-daily.service
+
+[Install]
+WantedBy=timers.target

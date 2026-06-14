@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Barry Facebook daily loop at 17:55 every day
+
+[Timer]
+OnCalendar=*-*-* 17:55:00
+Persistent=true
+Unit=barry-facebook-loop-daily.service
+
+[Install]
+WantedBy=timers.target

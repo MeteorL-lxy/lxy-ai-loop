@@ -1,0 +1,6 @@
+{
+  "name": "barry-video",
+  "display_name": "Barry Video",
+  "short_description": "Barry's end-to-end workflow for novel-video publishing, short-drama loops, official-Vidu generation, account-pool routing, and final-status social posting",
+  "default_prompt": "Use Barry Video when the user wants the system to select novels or dramas, match a configured account pool, generate with official Vidu or AI editing, publish to TikTok/Facebook, and follow through to the final publish status."
+}

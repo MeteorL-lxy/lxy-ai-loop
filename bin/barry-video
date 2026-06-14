@@ -1,0 +1,222 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  BIN_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$BIN_DIR/$SOURCE"
+done
+BIN_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+ROOT_DIR="$(cd "$BIN_DIR/.." && pwd)"
+PRIVATE_BACKEND="$ROOT_DIR/backend/inbeidou_cli.py"
+BACKEND_CLI="${BARRY_VIDEO_BACKEND:-$PRIVATE_BACKEND}"
+PRIVATE_FLYWHEEL_BACKEND="$ROOT_DIR/backend/flywheel_cli.py"
+FLYWHEEL_BACKEND_CLI="${BARRY_VIDEO_FLYWHEEL_BACKEND:-$PRIVATE_FLYWHEEL_BACKEND}"
+OPENCLAW_HOME="${OPENCLAW_HOME:-$HOME/.openclaw}"
+if [ ! -f "$BACKEND_CLI" ]; then
+  if [ -f "$HOME/inbeidou_cli.py" ]; then
+    BACKEND_CLI="$HOME/inbeidou_cli.py"
+  elif [ -f "/Users/ming/inbeidou_cli.py" ]; then
+    BACKEND_CLI="/Users/ming/inbeidou_cli.py"
+  fi
+fi
+PYTHON_BIN="${BARRY_VIDEO_PYTHON:-python3}"
+BACKEND_TARGET_CLI="$BACKEND_CLI"
+
+read_saved_auth_token() {
+  "$PYTHON_BIN" - "$HOME/.barry-video/auth_state.json" "$OPENCLAW_HOME" <<'PY'
+import json
+import pathlib
+import sys
+
+auth_state_file = pathlib.Path(sys.argv[1]).expanduser()
+openclaw_home = pathlib.Path(sys.argv[2]).expanduser()
+
+def read_json(path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+auth_state = read_json(auth_state_file)
+token = auth_state.get("access_token") or ""
+if token:
+    print(token)
+    raise SystemExit(0)
+
+openclaw_payload = read_json(openclaw_home / "openclaw.json")
+token = (
+    openclaw_payload.get("plugins", {})
+    .get("entries", {})
+    .get("barry-video", {})
+    .get("config", {})
+    .get("authToken", "")
+)
+if token:
+    print(token)
+PY
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  barry-video install
+  barry-video login
+  barry-video auth
+  barry-video logout
+  barry-video status
+  barry-video mcp
+  barry-video backend <inbeidou_cli.py args...>
+  barry-video package [output.tgz]
+  barry-video smoke
+EOF
+}
+
+normalize_backend_args() {
+  BACKEND_ARGS=("$@")
+  if [ "${#BACKEND_ARGS[@]}" -eq 0 ]; then
+    return
+  fi
+
+  case "${BACKEND_ARGS[0]}" in
+    publish-*|novels-*|manus-*|episodes-*|uploads-*|clip-*|translate-*)
+      local group="${BACKEND_ARGS[0]%%-*}"
+      local action="${BACKEND_ARGS[0]#*-}"
+      BACKEND_ARGS=("$group" "$action" "${BACKEND_ARGS[@]:1}")
+      ;;
+    batch-drama)
+      BACKEND_ARGS=("run-batch-drama" "${BACKEND_ARGS[@]:1}")
+      ;;
+  esac
+}
+
+backend_is_flywheel_command() {
+  case "${1:-}" in
+    init-db|run-round|run-local|run-batch-drama|retry-failed-publish|discard-failed-publish-output|show-failed-publish-paths|score|import-accounts|sync-publish-accounts|account|show-round)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+backend_strip_flag() {
+  local needle="$1"
+  shift
+  local filtered=()
+  local value=""
+  for value in "$@"; do
+    if [ "$value" = "$needle" ]; then
+      continue
+    fi
+    filtered+=("$value")
+  done
+  BACKEND_ARGS=("${filtered[@]}")
+}
+
+backend_has_flag() {
+  local needle="$1"
+  shift
+  local value=""
+  for value in "$@"; do
+    if [ "$value" = "$needle" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+backend_should_force_json() {
+  if [ -t 1 ]; then
+    return 1
+  fi
+  if backend_has_flag "--json" "$@"; then
+    return 1
+  fi
+
+  case "${1:-}" in
+    user|credit|products|languages)
+      return 0
+      ;;
+    list|detail)
+      return 0
+      ;;
+    publish)
+      case "${2:-}" in
+        accounts|records)
+          return 0
+          ;;
+      esac
+      ;;
+    novels)
+      case "${2:-}" in
+        list|random|quota|chapter)
+          return 0
+          ;;
+      esac
+      ;;
+    manus)
+      case "${2:-}" in
+        list|detail)
+          return 0
+          ;;
+      esac
+      ;;
+    episodes)
+      case "${2:-}" in
+        list|fetch)
+          return 0
+          ;;
+      esac
+      ;;
+  esac
+  return 1
+}
+
+COMMAND="${1:-}"
+
+case "$COMMAND" in
+  install)
+    shift
+    exec "$ROOT_DIR/scripts/install-local.sh" "$@"
+    ;;
+  login|auth|logout|status)
+    exec node "$ROOT_DIR/scripts/auth-cli.mjs" "$COMMAND" "${@:2}"
+    ;;
+  mcp)
+    shift
+    exec node "$ROOT_DIR/scripts/mcp-server.mjs" "$@"
+    ;;
+  backend)
+    shift
+    if [ -z "${INBEIDOU_TOKEN:-}" ] && [ -z "${BARRY_VIDEO_AUTH_TOKEN:-}" ] && [ -z "${BARRY_VIDEO_TOKEN:-}" ]; then
+      SAVED_TOKEN="$(node "$ROOT_DIR/scripts/auth-cli.mjs" ensure --print-token)"
+      if [ -n "$SAVED_TOKEN" ]; then
+        export INBEIDOU_TOKEN="$SAVED_TOKEN"
+      fi
+    fi
+    normalize_backend_args "$@"
+    BACKEND_TARGET_CLI="$BACKEND_CLI"
+    if backend_is_flywheel_command "${BACKEND_ARGS[0]:-}"; then
+      BACKEND_TARGET_CLI="$FLYWHEEL_BACKEND_CLI"
+      if backend_has_flag "--json" "${BACKEND_ARGS[@]}"; then
+        backend_strip_flag "--json" "${BACKEND_ARGS[@]}"
+      fi
+    elif backend_should_force_json "${BACKEND_ARGS[@]}"; then
+      BACKEND_ARGS+=("--json")
+    fi
+    exec "$PYTHON_BIN" "$BACKEND_TARGET_CLI" "${BACKEND_ARGS[@]}"
+    ;;
+  package)
+    shift
+    exec "$ROOT_DIR/scripts/package-release.sh" "$@"
+    ;;
+  smoke)
+    shift
+    exec "$ROOT_DIR/scripts/smoke-test.sh" "$@"
+    ;;
+  *)
+    usage >&2
+    exit 1
+    ;;
+esac

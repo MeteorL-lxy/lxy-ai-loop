@@ -1,0 +1,10 @@
+[Unit]
+Description=Barry Facebook publish analysis daily report
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/barry-facebook-loop
+ExecStart=/opt/barry-facebook-loop/scripts/run-server-analysis-daily.sh
+

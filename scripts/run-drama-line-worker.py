@@ -1,0 +1,337 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT_DIR / "backend"))
+
+from flywheel.daily_loop_targets import get_pool_target_status, select_balanced_account_ids  # noqa: E402
+from flywheel.daily_loop_targets import reset_success_target_window  # noqa: E402
+
+
+def _truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(str(os.getenv(name, str(default))).strip() or default)
+    except Exception:
+        return default
+
+
+def _log(message: str) -> None:
+    print(f"[{datetime.now().strftime('%F %T')}] {message}", flush=True)
+
+
+def _runtime_paths(line_name: str) -> tuple[str, Path, Path, Path]:
+    day = datetime.now().strftime("%Y-%m-%d")
+    state_root = Path(os.getenv("BARRY_LOOP_STATE_ROOT", str(ROOT_DIR / "runtime" / "continuous-loop"))).expanduser()
+    report_root = Path(os.getenv("BARRY_LOOP_REPORT_DIR", str(ROOT_DIR / "runtime" / "reports" / "test-summary"))).expanduser()
+    run_dir = state_root / day / line_name
+    log_path = run_dir / "worker.log"
+    report_dir = report_root / day / line_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    return day, run_dir, log_path, report_dir
+
+
+def _next_round_name(run_dir: Path) -> str:
+    max_index = 0
+    for path in run_dir.glob("round*.json"):
+        stem = path.stem
+        suffix = stem[5:]
+        if suffix.isdigit():
+            max_index = max(max_index, int(suffix))
+    return f"round{max_index + 1}"
+
+
+def _line_run_dir(line_name: str) -> Path:
+    day = datetime.now().strftime("%Y-%m-%d")
+    state_root = Path(os.getenv("BARRY_LOOP_STATE_ROOT", str(ROOT_DIR / "runtime" / "continuous-loop"))).expanduser()
+    return state_root / day / line_name
+
+
+def _requested_count(pool_name: str, run_dir: Path, *, platform: str, configured_count: int) -> tuple[int, dict]:
+    account_success_target = _env_int("BARRY_LOOP_ACCOUNT_SUCCESS_TARGET", 10)
+    status = get_pool_target_status(
+        root_dir=ROOT_DIR,
+        run_dir=run_dir,
+        pool_name=pool_name,
+        platform=platform,
+        account_success_target=account_success_target,
+    )
+    eligible = int(status.get("eligible_pool_size") or 0)
+    if eligible <= 0:
+        return 0, status
+    if configured_count > 0:
+        requested = min(configured_count, eligible)
+    else:
+        requested = eligible
+    return max(0, requested), status
+
+
+def _dependency_line_ready(*, line_name: str, pool_name: str, platform: str, account_success_target: int) -> tuple[bool, dict]:
+    run_dir = _line_run_dir(line_name)
+    status = get_pool_target_status(
+        root_dir=ROOT_DIR,
+        run_dir=run_dir,
+        pool_name=pool_name,
+        platform=platform,
+        account_success_target=account_success_target,
+    )
+    unmet_accounts = int(status.get("unmet_account_count") or 0)
+    remaining_deficit = int(status.get("remaining_success_deficit") or 0)
+    return unmet_accounts <= 0 and remaining_deficit <= 0, status
+
+
+def _write_summary(
+    *,
+    json_path: Path,
+    summary_path: Path,
+    round_name: str,
+    label: str,
+    started: str,
+    requested_arg: int,
+) -> dict:
+    payload = {}
+    try:
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {}
+    report = payload.get("report_zh") if isinstance(payload.get("report_zh"), dict) else {}
+    payload_status = str(payload.get("status") or "").strip()
+    payload_message = str(payload.get("message") or payload.get("error") or "").strip()
+    requested = int(payload.get("requested_count") or report.get("请求数量") or requested_arg or 0)
+    success = int(report.get("发布成功数") or 0)
+    failed = int(report.get("失败数") or 0)
+    processing = int(report.get("发布处理中数") or 0)
+    planned = int(report.get("计划数量") or requested or requested_arg or 0)
+    unsubmitted = max(planned - success - failed - processing, 0)
+    status = "done" if payload else "error"
+    status_label = "已完成"
+    note = ""
+    if payload_status and payload_status not in {"success", "ok", "done"}:
+        if payload_status == "no_enough_playable_dramas":
+            status = "blocked"
+            status_label = "素材不足"
+            requested = max(requested, requested_arg)
+            planned = max(planned, requested_arg)
+            unsubmitted = max(unsubmitted, requested_arg)
+        else:
+            status = "error"
+            status_label = "异常结束"
+        note = payload_message or payload_status
+    elif not payload:
+        status_label = "异常结束"
+        note = "结果文件为空或不可解析"
+
+    summary_path.write_text(
+        "\n".join(
+            [
+                f"round={round_name}",
+                f"label={label}",
+                "scheduled_time=continuous",
+                f"started_at={started}",
+                f"status={status}",
+                f"status_label={status_label}",
+                f"requested_count={requested}",
+                f"planned_count={planned}",
+                f"success_count={success}",
+                f"failed_count={failed}",
+                f"processing_count={processing}",
+                f"unsubmitted_count={unsubmitted}",
+                f"report_file={str(((payload.get('test_report_files') or {}).get('markdown') or '')).strip()}",
+                f"note={note}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return {
+        "status": status,
+        "requested": requested,
+        "success": success,
+        "failed": failed,
+        "processing": processing,
+        "unsubmitted": unsubmitted,
+        "note": note,
+    }
+
+
+def main() -> int:
+    line_name = str(os.getenv("BARRY_LOOP_LINE_NAME") or "").strip() or "ordinary"
+    pool_name = str(os.getenv("BARRY_LOOP_ACCOUNT_POOL") or "").strip()
+    if not pool_name:
+        raise SystemExit("missing BARRY_LOOP_ACCOUNT_POOL")
+    flywheel_config = str(os.getenv("BARRY_LOOP_FLYWHEEL_CONFIG") or "").strip()
+    platform = str(os.getenv("BARRY_LOOP_PLATFORM") or "FACEBOOK").strip() or "FACEBOOK"
+    configured_count = _env_int("BARRY_LOOP_COUNT", 0)
+    account_success_target = _env_int("BARRY_LOOP_ACCOUNT_SUCCESS_TARGET", 10)
+    idle_sleep = _env_int("BARRY_LOOP_LINE_IDLE_SLEEP_SECONDS", 300)
+    cycle_sleep = _env_int("BARRY_LOOP_LINE_SLEEP_SECONDS", 60 if line_name == "realtime" else 60)
+    error_sleep = _env_int("BARRY_LOOP_LINE_ERROR_SLEEP_SECONDS", 20)
+    target_reset_sleep = _env_int(
+        "BARRY_LOOP_LINE_TARGET_RESET_SLEEP_SECONDS",
+        3600 if line_name == "realtime" else 0,
+    )
+    creative_list_material_only = "1" if _truthy(os.getenv("BARRY_LOOP_CREATIVE_LIST_MATERIAL_ONLY", "0")) else "0"
+    wait_for_line = str(os.getenv("BARRY_LOOP_WAIT_FOR_LINE") or "").strip().lower()
+    wait_for_line_pool = str(os.getenv("BARRY_LOOP_WAIT_FOR_LINE_POOL") or "").strip()
+    allow_reuse = _truthy(os.getenv("BARRY_LOOP_ALLOW_ACCOUNT_REUSE", "1"))
+    realtime_enabled = "1" if _truthy(os.getenv("BARRY_REALTIME_RANK_ENABLED", "0")) else "0"
+    realtime_material_only = "1" if _truthy(os.getenv("BARRY_LOOP_REALTIME_MATERIAL_ONLY", "0")) else "0"
+
+    while True:
+        if wait_for_line and wait_for_line_pool:
+            ready, dependency_status = _dependency_line_ready(
+                line_name=wait_for_line,
+                pool_name=wait_for_line_pool,
+                platform=platform,
+                account_success_target=account_success_target,
+            )
+            if not ready:
+                _log(
+                    f"{line_name} 等待上游 {wait_for_line}：账号池={wait_for_line_pool}，"
+                    f"未达标账号={int(dependency_status.get('unmet_account_count') or 0)}，"
+                    f"剩余缺口={int(dependency_status.get('remaining_success_deficit') or 0)}；{idle_sleep}s 后重试。"
+                )
+                time.sleep(max(5, idle_sleep))
+                continue
+        _, run_dir, log_path, report_dir = _runtime_paths(line_name)
+        round_name = _next_round_name(run_dir)
+        label = f"{line_name}-{round_name}"
+        requested, status = _requested_count(
+            pool_name,
+            run_dir,
+            platform=platform,
+            configured_count=configured_count,
+        )
+        eligible_accounts = int(status.get("eligible_pool_size") or 0)
+        unmet_accounts = int(status.get("unmet_account_count") or 0)
+        remaining_deficit = int(status.get("remaining_success_deficit") or 0)
+        if requested <= 0 or eligible_accounts <= 0:
+            if (
+                line_name == "realtime"
+                and target_reset_sleep > 0
+                and eligible_accounts > 0
+                and unmet_accounts <= 0
+                and remaining_deficit <= 0
+            ):
+                _log(
+                    f"{line_name} 全部达标：账号池={pool_name}，账号日目标={account_success_target}，"
+                    f"已达标账号={eligible_accounts}；{target_reset_sleep}s 后重置达标标签并继续。"
+                )
+                time.sleep(max(5, target_reset_sleep))
+                reset_payload = reset_success_target_window(run_dir)
+                _log(
+                    f"{line_name} 达标标签已重置：generation={int(reset_payload.get('generation') or 0)}，"
+                    f"reset_at={str(reset_payload.get('reset_at') or '').strip()}。"
+                )
+                continue
+            _log(
+                f"{line_name} 空闲：账号池={pool_name}，账号日目标={account_success_target}，"
+                f"未达标账号={unmet_accounts}，剩余缺口={remaining_deficit}；{idle_sleep}s 后继续检查。"
+            )
+            time.sleep(max(5, idle_sleep))
+            continue
+
+        try:
+            selected = select_balanced_account_ids(
+                root_dir=ROOT_DIR,
+                run_dir=run_dir,
+                pool_name=pool_name,
+                platform=platform,
+                requested_count=requested,
+                account_success_target=account_success_target,
+                allow_reuse=allow_reuse,
+            )
+        except Exception as exc:
+            _log(f"{line_name} 选账号失败：{exc}；{error_sleep}s 后重试。")
+            time.sleep(max(5, error_sleep))
+            continue
+
+        account_ids = [str(item).strip() for item in (selected.get("account_ids") or []) if str(item).strip()]
+        if len(account_ids) < requested:
+            _log(f"{line_name} 可用账号不足：需要 {requested} 个，实际 {len(account_ids)} 个；{error_sleep}s 后重试。")
+            time.sleep(max(5, error_sleep))
+            continue
+
+        json_path = run_dir / f"{round_name}.json"
+        summary_path = run_dir / f"{round_name}.summary"
+        started = datetime.now().strftime("%F %T")
+        line_report_dir = report_dir / round_name
+        line_report_dir.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            "env",
+            "BARRY_FEISHU_TEST_PUSH=0",
+            f"BARRY_VIDEO_TEST_SUMMARY_DIR={line_report_dir}",
+            f"BARRY_LOOP_LINE_NAME={line_name}",
+            f"BARRY_LOOP_ROUND_LABEL={label}",
+            "BARRY_LOOP_ROUND_SCHEDULED_TIME=continuous",
+            f"BARRY_LOOP_ROUND_STARTED_AT={started}",
+            f"BARRY_REALTIME_RANK_ENABLED={realtime_enabled}",
+            "python3",
+            "backend/flywheel_cli.py",
+            "run-batch-drama",
+            "--execute",
+            "--count",
+            str(requested),
+            "--publish-platform",
+            platform,
+            "--json",
+        ]
+        if flywheel_config:
+            cmd.extend(["--config", flywheel_config])
+        if allow_reuse:
+            cmd.append("--allow-account-reuse")
+        for account_id in account_ids:
+            cmd.extend(["--account-id", account_id])
+
+        _log(
+            f"{label} 开始：账号池={pool_name}，请求={requested}，未达标可用账号={int(selected.get('eligible_pool_size') or 0)}，"
+            f"账号日目标={account_success_target}，"
+            f"取数模式=按账号池动态，"
+            f"配置={flywheel_config or '默认'}，"
+            f"实时榜={'开启' if realtime_enabled == '1' else '关闭'}，"
+            f"素材直驱={'开启' if realtime_material_only == '1' else '关闭'}，"
+            f"创意列表直驱={'开启' if creative_list_material_only == '1' else '关闭'}，"
+            f"官方切片={'FFmpeg' if line_name in {'fbhot_test', 'yourchannel'} else '默认'}。"
+        )
+        with log_path.open("a", encoding="utf-8") as log_handle, json_path.open("w", encoding="utf-8") as json_handle:
+            log_handle.write(f"\n[{datetime.now().strftime('%F %T')}] $ {' '.join(cmd)}\n")
+            log_handle.flush()
+            proc = subprocess.run(
+                cmd,
+                cwd=str(ROOT_DIR),
+                text=True,
+                stdout=json_handle,
+                stderr=log_handle,
+                check=False,
+            )
+        if proc.returncode != 0:
+            _log(f"{label} 命令返回非零（rc={proc.returncode}），继续按结果文件汇总。")
+        metrics = _write_summary(
+            json_path=json_path,
+            summary_path=summary_path,
+            round_name=round_name,
+            label=label,
+            started=started,
+            requested_arg=requested,
+        )
+        _log(
+            f"{label} 完成：成功 {metrics['success']}，失败 {metrics['failed']}，处理中 {metrics['processing']}，未提交 {metrics['unsubmitted']}。"
+        )
+        time.sleep(max(5, cycle_sleep))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

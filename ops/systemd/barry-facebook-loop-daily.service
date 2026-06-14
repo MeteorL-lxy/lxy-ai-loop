@@ -1,0 +1,11 @@
+[Unit]
+Description=Barry Facebook daily loop runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/barry-facebook-loop
+ExecStart=/opt/barry-facebook-loop/scripts/run-server-daily-loop.sh
+Restart=no
+
