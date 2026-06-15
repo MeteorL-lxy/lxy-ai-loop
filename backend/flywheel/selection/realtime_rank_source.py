@@ -325,7 +325,7 @@ def _zing_post(path: str, payload: dict[str, Any], *, timeout: float) -> dict[st
             f"{GUANGDADA_API_BASE}{path}",
             json=payload,
             headers=_zing_headers(),
-            timeout=max(5.0, float(timeout)),
+            timeout=max(15.0, float(timeout)),
         )
         response.raise_for_status()
     except requests.RequestException as exc:
@@ -683,8 +683,8 @@ def _external_video_lookup_timeout(timeout: float) -> float:
     try:
         value = float(timeout)
     except (TypeError, ValueError):
-        value = 5.0
-    return max(3.0, min(value, 5.0))
+        value = 180.0
+    return max(15.0, min(value, 180.0))
 
 
 def _log_realtime_skip(message: str) -> None:

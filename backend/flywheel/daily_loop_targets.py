@@ -23,7 +23,7 @@ UNSUPPORTED_REEL_PATTERNS = (
 
 SUCCESS_TARGET_RESET_FILE = ".success_target_reset.json"
 REEL_BLOCK_POOL_NAME = "facebook_drama_reel_block_pool"
-REEL_BLOCK_THRESHOLD = 5
+REEL_BLOCK_THRESHOLD = 3
 REEL_BLOCK_STATE_DIR = "runtime/account-flags"
 REEL_BLOCK_STATE_FILE = "reel_publish_block_state.json"
 REEL_BLOCK_LOCK_FILE = "reel_publish_block_state.lock"

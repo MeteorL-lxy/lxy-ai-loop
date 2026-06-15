@@ -11,6 +11,46 @@ from inbeidou_cli import get_publish_records, require_success
 
 RUNNING_PUBLISH_STATUSES = {"WAITING", "PENDING", "PROCESSING", "QUEUED", "SUBMITTED"}
 SUCCESSFUL_PUBLISH_STATUSES = {"POSTED", "SUCCESS", "DONE"}
+PROJECT_ROOT_DIR = Path(__file__).resolve().parents[3]
+PROJECT_DELETE_ALLOWED_ROOTS = (
+    PROJECT_ROOT_DIR / "data" / "flywheel" / "clipped",
+    PROJECT_ROOT_DIR / "runtime",
+)
+PROJECT_DELETE_PROTECTED_NAMES = {
+    ".git",
+    "backend",
+    "bin",
+    "conf",
+    "docs",
+    "ops",
+    "scripts",
+    "skills",
+    "tools",
+}
+
+
+def _is_relative_to_path(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def _validate_cleanup_target(path: Path) -> tuple[bool, str]:
+    try:
+        resolved = path.expanduser().resolve()
+    except OSError as exc:
+        return False, f"路径解析失败: {exc}"
+    if resolved == PROJECT_ROOT_DIR or PROJECT_ROOT_DIR in resolved.parents:
+        rel = resolved.relative_to(PROJECT_ROOT_DIR)
+        if rel.parts and rel.parts[0] in PROJECT_DELETE_PROTECTED_NAMES:
+            return False, "拒绝删除项目源码/配置目录"
+        if not any(_is_relative_to_path(resolved, root.resolve()) for root in PROJECT_DELETE_ALLOWED_ROOTS):
+            return False, "拒绝删除非产物区的项目文件"
+    if resolved in {Path.home().resolve()}:
+        return False, "拒绝删除用户目录"
+    return True, ""
 
 
 def _fetch_remote_records(*, platforms: list[str], max_pages: int, page_size: int) -> dict[tuple[str, str], dict[str, Any]]:
@@ -116,6 +156,10 @@ def _cleanup_local_publish_files(
             if not path.exists():
                 continue
             try:
+                allowed, reason = _validate_cleanup_target(path)
+                if not allowed:
+                    failed_paths.append({"path": str(path), "error": reason})
+                    continue
                 path.unlink()
                 deleted_paths.append(str(path))
             except OSError as exc:

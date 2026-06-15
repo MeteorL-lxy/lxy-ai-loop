@@ -1,0 +1,10 @@
+{
+  "enabled": true,
+  "api_base": "http://124.174.76.6",
+  "owner": "刘心雨",
+  "uid": "9402541668",
+  "loop_name": "liuxinyu-ai-loop",
+  "account_type": "FACEBOOK",
+  "execute": true,
+  "min_accounts": 0
+}

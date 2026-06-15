@@ -14,7 +14,7 @@
   "realtime_rank": {
     "enabled": true,
     "base_url": "https://test-api-ai-guangdada.inbeidou.cn",
-    "timeout_seconds": 20,
+    "timeout_seconds": 180,
     "max_candidates": 30
   },
   "scoring": {

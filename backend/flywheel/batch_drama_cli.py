@@ -32,6 +32,24 @@ from flywheel.selection.realtime_rank_source import mark_realtime_hour_exhausted
 MODULE_ROOT_DIR = Path(__file__).resolve().parents[2]
 
 
+def _emit_status_line(event: str, payload: dict[str, object]) -> None:
+    body = {"event": str(event or "").strip(), **dict(payload or {})}
+    line = f"[line-status] {json.dumps(body, ensure_ascii=False, sort_keys=True)}"
+    emitter = globals().get("_emit_stderr_line")
+    if callable(emitter):
+        emitter(line)
+        return
+    print(line, file=sys.stderr, flush=True)
+
+
+def _count_skip_reasons(items: list[dict[str, object]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        reason = str(item.get("reason") or "unknown").strip() or "unknown"
+        counts[reason] = counts.get(reason, 0) + 1
+    return counts
+
+
 def bind(ctx):
     protected = set(globals().keys())
     for name, value in vars(ctx).items():
@@ -936,15 +954,7 @@ def _load_yourchannel_titles() -> list[str]:
     return []
 
 
-def _normalize_title_for_match(value: str) -> str:
-    normalized = str(value or "").strip().lower()
-    normalized = normalized.replace("’", "'").replace("‘", "'")
-    normalized = normalized.replace("“", '"').replace("”", '"')
-    normalized = re.sub(r"[^\w]+", " ", normalized, flags=re.UNICODE)
-    return " ".join(normalized.split())
-
-
-def _find_official_title_match(title: str, app_id: str) -> dict:
+def _find_official_title_match(title: str, app_id: str) -> tuple[dict, dict[str, object]]:
     body = require_success(
         get_tasks(
             page=1,
@@ -958,18 +968,21 @@ def _find_official_title_match(title: str, app_id: str) -> dict:
         f"查找官方短剧 {title}",
     )
     rows = body.get("data", []) if isinstance(body, dict) else []
-    wanted = _normalize_title_for_match(title)
+    page = body.get("page") if isinstance(body, dict) and isinstance(body.get("page"), dict) else {}
+    meta = {
+        "search_title": str(title or ""),
+        "app_id": str(app_id or ""),
+        "returned_count": len(rows),
+        "total_count": int(page.get("total_count") or 0),
+    }
     for row in rows:
-        if not isinstance(row, dict):
-            continue
-        titles = [
-            str(row.get("title") or "").strip(),
-            str(row.get("title_ch") or "").strip(),
-            str(row.get("title_en") or "").strip(),
-        ]
-        if any(_normalize_title_for_match(item) == wanted for item in titles if item):
-            return dict(row)
-    return {}
+        if isinstance(row, dict):
+            selected = dict(row)
+            meta["selected_task_id"] = str(selected.get("task_id") or "")
+            meta["selected_serial_id"] = str(selected.get("serial_id") or "")
+            meta["selected_title"] = str(selected.get("title") or selected.get("title_en") or selected.get("title_ch") or "")
+            return selected, meta
+    return {}, meta
 
 
 def _select_yourchannel_sources(args: argparse.Namespace, config, *, target_count: int | None = None) -> tuple[list[dict], list[dict]]:
@@ -983,7 +996,15 @@ def _select_yourchannel_sources(args: argparse.Namespace, config, *, target_coun
     sources: list[dict[str, object]] = []
     skipped: list[dict[str, object]] = []
     for title in titles:
-        drama = _find_official_title_match(title, "yourchannel_drama")
+        drama, search_meta = _find_official_title_match(title, "yourchannel_drama")
+        _emit_status_line(
+            "yourchannel_title_search",
+            {
+                "line": _line_name(),
+                **search_meta,
+                "matched": bool(drama),
+            },
+        )
         if not drama:
             skipped.append({"title": title, "app_id": "yourchannel_drama", "reason": "official_title_not_found"})
             continue
@@ -1003,6 +1024,18 @@ def _select_yourchannel_sources(args: argparse.Namespace, config, *, target_coun
         if len(sources) >= desired_count:
             break
     if not sources:
+        reason_counts = _count_skip_reasons(skipped)
+        _emit_status_line(
+            "yourchannel_selection_empty",
+            {
+                "line": _line_name(),
+                "allowlist_title_count": len(titles),
+                "matched_source_count": 0,
+                "skipped_count": len(skipped),
+                "skip_reason_counts": reason_counts,
+                "skipped_preview": skipped[:10],
+            },
+        )
         raise SystemExit(
             "YourChannel 白名单剧名已扫描完成，但没有可直接进入 ffmpeg 剪辑发布的官方剧集。"
         )
@@ -1242,6 +1275,21 @@ def _build_batch_plan(args: argparse.Namespace, config) -> dict[str, object]:
         selected_sources,
         requested_count=args.count,
     )
+    selection_summary = {
+        "line": _line_name(),
+        "requested_count": int(args.count),
+        "selected_source_count": len(selected_sources),
+        "primary_source_count": len(primary_sources),
+        "reserve_source_count": len(reserve_sources),
+        "skipped_count": len(skipped),
+        "skip_reason_counts": _count_skip_reasons(skipped),
+        "skipped_preview": skipped[:10],
+        "realtime_enabled": bool(_realtime_material_mode_enabled()),
+        "creative_list_enabled": bool(_creative_list_material_mode_enabled()),
+        "yourchannel_enabled": bool(_yourchannel_mode_enabled()),
+        "official_ffmpeg_enabled": bool(_official_ffmpeg_mode_enabled()),
+    }
+    _emit_status_line("selection_summary", selection_summary)
     unique_playable_source_count = len(
         {
             _source_identity(source)
@@ -1289,6 +1337,7 @@ def _build_batch_plan(args: argparse.Namespace, config) -> dict[str, object]:
         },
         "strategy_memory": _strategy_memory_meta(config),
         "skipped_preview": skipped[:10],
+        "selection_summary": selection_summary,
         "reserve_sources": reserve_sources,
         "replacement_buffer": len(reserve_sources),
         "unique_playable_source_count": unique_playable_source_count,
@@ -2268,6 +2317,7 @@ def _batch_report_zh(payload: dict) -> dict:
             theater_counts[theater] = theater_counts.get(theater, 0) + 1
     safety_gate = payload.get("safety_gate") if isinstance(payload.get("safety_gate"), dict) else {}
     strategy_memory = payload.get("strategy_memory") if isinstance(payload.get("strategy_memory"), dict) else {}
+    selection_summary = payload.get("selection_summary") if isinstance(payload.get("selection_summary"), dict) else {}
     return {
         "执行模式": "批量短剧剪辑发布（仅规划）" if is_dry_run else "批量短剧剪辑发布",
         "目标平台": _platform_label(str(payload.get("platform") or "")),
@@ -2278,6 +2328,14 @@ def _batch_report_zh(payload: dict) -> dict:
         "实时榜外部素材数": int(payload.get("realtime_external_unique_count") or 0),
         "实时榜外部素材填充槽位数": int(payload.get("realtime_external_slot_fill_count") or 0),
         "复用补量数": int(payload.get("source_reuse_fill_count") or 0),
+        "选剧摘要": {
+            "候选命中数": int(selection_summary.get("selected_source_count") or 0),
+            "主候选数": int(selection_summary.get("primary_source_count") or 0),
+            "备用候选数": int(selection_summary.get("reserve_source_count") or 0),
+            "跳过数": int(selection_summary.get("skipped_count") or 0),
+            "跳过原因统计": dict(selection_summary.get("skip_reason_counts") or {}),
+            "跳过预览": list(selection_summary.get("skipped_preview") or []),
+        },
         "剧场分布": theater_counts,
         "剪辑成功数": len([item for item in items if item.get("clip")]),
         "发布提交数": sum(len(((item.get("publish") or {}).get("tasks") or [])) for item in items),
@@ -2529,6 +2587,19 @@ def cmd_run_batch_drama(args) -> None:
         "unfilled_count": int(safety_refill.get("unfilled_count") or 0),
         "unfilled_slots": list(safety_refill.get("unfilled_slots") or []),
     }
+    _emit_status_line(
+        "safety_gate_summary",
+        {
+            "line": _line_name(),
+            "passed_count": int(safety_gate.get("passed_count") or 0),
+            "rejected_count": int(safety_gate.get("rejected_count") or 0),
+            "replacement_filled_count": int(safety_gate.get("replacement_filled_count") or 0),
+            "reserve_source_count": int(safety_gate.get("reserve_source_count") or 0),
+            "reserve_attempt_count": int(safety_gate.get("reserve_attempt_count") or 0),
+            "unfilled_count": int(safety_gate.get("unfilled_count") or 0),
+            "rejected_preview": list(safety_gate.get("rejected_preview") or []),
+        },
+    )
     items = approved_items
     if not items:
         raise SystemExit(
@@ -2639,6 +2710,7 @@ def cmd_run_batch_drama(args) -> None:
         "safety_gate": safety_gate,
         "strategy_memory": plan.get("strategy_memory", {}),
         "skipped_preview": plan.get("skipped_preview", []),
+        "selection_summary": plan.get("selection_summary", {}),
         "unique_playable_source_count": int(plan.get("unique_playable_source_count") or 0),
         "source_reuse_fill_count": int(plan.get("source_reuse_fill_count") or 0),
         "realtime_external_unique_count": int(plan.get("realtime_external_unique_count") or 0),

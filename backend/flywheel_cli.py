@@ -47,7 +47,6 @@ from inbeidou_cli import (
     get_publish_analysis,
     get_publish_accounts,
     get_publish_records,
-    get_tasks,
     normalize_publish_platform,
     probe_video,
     receive_task,
@@ -87,10 +86,7 @@ from flywheel import publish_reporting as publish_reporting_module
 from flywheel.feishu_cards import build_analysis_feishu_card, build_test_feishu_card
 from flywheel.selection.candidate_pool import fetch_candidates
 from flywheel.selection.history_filter import candidate_history_keys, candidate_serial_ids, split_recent_candidates
-from flywheel.selection.realtime_rank_source import (
-    fetch_creative_list_candidates,
-    fetch_realtime_rank_candidates,
-)
+from flywheel.selection.realtime_rank_source import fetch_realtime_rank_candidates
 from flywheel.clipping.episode_selector import _episode_api_with_retries, select_best_episode
 from flywheel.clipping.ai_cut_animation import (
     AiCutAnimationError,
@@ -161,6 +157,49 @@ DEFAULT_NOVEL_WORK_DIR = Path(
     os.getenv("BARRY_VIDEO_NOVEL_WORK_DIR")
     or str(Path(tempfile.gettempdir()) / "barry-video-novels-work")
 ).expanduser()
+PROJECT_ROOT_DIR = Path(__file__).resolve().parents[1]
+PROJECT_DELETE_ALLOWED_ROOTS = (
+    PROJECT_ROOT_DIR / "data" / "flywheel" / "clipped",
+    PROJECT_ROOT_DIR / "runtime" / "reports",
+    PROJECT_ROOT_DIR / "runtime" / "analysis-daily",
+    PROJECT_ROOT_DIR / "runtime" / "daily-loop",
+    PROJECT_ROOT_DIR / "runtime" / "continuous-loop",
+)
+PROJECT_DELETE_PROTECTED_NAMES = {
+    ".git",
+    "backend",
+    "bin",
+    "conf",
+    "docs",
+    "ops",
+    "scripts",
+    "skills",
+    "tools",
+}
+
+
+def _is_relative_to_path(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def _validate_cleanup_target(path: Path) -> tuple[bool, str]:
+    try:
+        resolved = path.expanduser().resolve()
+    except OSError as exc:
+        return False, f"路径解析失败: {exc}"
+    if resolved == PROJECT_ROOT_DIR or PROJECT_ROOT_DIR in resolved.parents:
+        rel = resolved.relative_to(PROJECT_ROOT_DIR)
+        if rel.parts and rel.parts[0] in PROJECT_DELETE_PROTECTED_NAMES:
+            return False, "拒绝删除项目源码/配置目录"
+        if not any(_is_relative_to_path(resolved, root.resolve()) for root in PROJECT_DELETE_ALLOWED_ROOTS):
+            return False, "拒绝删除非产物区的项目文件"
+    if resolved in {Path.home().resolve(), Path(tempfile.gettempdir()).resolve()}:
+        return False, "拒绝删除用户目录或系统临时根目录"
+    return True, ""
 
 
 def _load_feishu_env_once() -> None:
@@ -395,6 +434,9 @@ def _delete_report_file_after_push(files: dict[str, object]) -> list[str]:
     if markdown:
         path = Path(markdown).expanduser()
         if path.exists() and path.is_file():
+            allowed, _reason = _validate_cleanup_target(path)
+            if not allowed:
+                return deleted
             path.unlink()
             deleted.append(str(path))
     return deleted
@@ -720,11 +762,7 @@ def _candidate_source_priority(item: dict) -> int:
     source = _candidate_fetch_source(item)
     if source == "realtime_rank_external":
         return 4
-    if source == "creative_list_external":
-        return 4
     if source == "realtime_rank_matched":
-        return 3
-    if source in {"yourchannel_official_ffmpeg", "official_ffmpeg"}:
         return 3
     if source in {"task_api", ""}:
         return 2
@@ -735,14 +773,8 @@ def _candidate_source_label(item: dict) -> str:
     source = _candidate_fetch_source(item)
     if source == "realtime_rank_external":
         return "实时榜外部素材"
-    if source == "creative_list_external":
-        return "创意列表外部素材"
     if source == "realtime_rank_matched":
         return "实时榜匹配"
-    if source == "yourchannel_official_ffmpeg":
-        return "YourChannel 官方剧集"
-    if source == "official_ffmpeg":
-        return "官方剧集快切"
     return "接口回退"
 
 
@@ -2584,6 +2616,10 @@ def _cleanup_generated_files(paths: list[str]) -> dict[str, object]:
         if not str(path) or str(path) in seen or not path.exists():
             continue
         seen.add(str(path))
+        allowed, reason = _validate_cleanup_target(path)
+        if not allowed:
+            errors.append({"path": str(path), "error": reason})
+            continue
         try:
             if path.is_dir():
                 shutil.rmtree(path)

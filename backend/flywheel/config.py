@@ -87,7 +87,7 @@ class FlywheelConfig:
         override = os.getenv("BARRY_REALTIME_RANK_TIMEOUT_SECONDS")
         if override is not None and str(override).strip() != "":
             return float(override)
-        return float(self.raw.get("realtime_rank", {}).get("timeout_seconds", 20))
+        return float(self.raw.get("realtime_rank", {}).get("timeout_seconds", 180))
 
     @property
     def realtime_rank_max_candidates(self) -> int:

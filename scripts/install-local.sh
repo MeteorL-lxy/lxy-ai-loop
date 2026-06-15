@@ -54,6 +54,24 @@ done
 
 mkdir -p "$EXTENSIONS_DIR" "$SKILLS_DIR" "$CODEX_SKILLS_DIR" "$CLAUDE_SKILLS_DIR"
 
+for required_path in backend scripts conf skills openclaw.plugin.json; do
+  if [ ! -e "$ROOT_DIR/$required_path" ]; then
+    echo "Error: workspace looks incomplete, missing $required_path; aborting install-local sync." >&2
+    exit 2
+  fi
+done
+
+SOURCE_FILE_COUNT="$(find "$ROOT_DIR" \
+  -path "$ROOT_DIR/.git" -prune -o \
+  -path "$ROOT_DIR/data" -prune -o \
+  -path "$ROOT_DIR/runtime" -prune -o \
+  -path "$ROOT_DIR/logs" -prune -o \
+  -type f -print | wc -l | tr -d ' ')"
+if [ "${SOURCE_FILE_COUNT:-0}" -lt 60 ]; then
+  echo "Error: workspace has only ${SOURCE_FILE_COUNT:-0} source files; refusing rsync --delete to plugin copy." >&2
+  exit 2
+fi
+
 rsync -a --delete \
   --exclude '.git/' \
   --exclude '.DS_Store' \

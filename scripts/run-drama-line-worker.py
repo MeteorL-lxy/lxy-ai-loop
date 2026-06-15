@@ -67,6 +67,168 @@ def _runtime_paths(line_name: str) -> tuple[str, Path, Path, Path]:
     return day, run_dir, log_path, report_dir
 
 
+def _load_tracker_config() -> dict:
+    path = ROOT_DIR / "conf" / "video_pipeline_tracker.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"enabled": False}
+    return payload if isinstance(payload, dict) else {"enabled": False}
+
+
+def _tracker_enabled(config: dict) -> bool:
+    return str(config.get("enabled") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _write_tracker_error(path: Path, *, stage: str, error: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "ok": False,
+                "stage": stage,
+                "error": str(error or ""),
+                "written_at": datetime.now().strftime("%F %T"),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _run_tracker_command(cmd: list[str], *, log_path: Path, stage: str, fallback_output: Path | None = None) -> bool:
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(f"\n[{datetime.now().strftime('%F %T')}] tracker {stage}: {' '.join(cmd)}\n")
+        handle.flush()
+        result = subprocess.run(cmd, cwd=str(ROOT_DIR), text=True, stdout=handle, stderr=handle, check=False)
+    if result.returncode == 0:
+        return True
+    if fallback_output is not None and not fallback_output.exists():
+        _write_tracker_error(fallback_output, stage=stage, error=f"tracker command failed rc={result.returncode}")
+    _log(f"tracker {stage} 失败（rc={result.returncode}），发布主流程继续。")
+    return False
+
+
+def _prepare_tracker_artifacts(
+    *,
+    config: dict,
+    line_name: str,
+    label: str,
+    artifact_dir: Path,
+    log_path: Path,
+) -> tuple[Path, Path, Path]:
+    bundle_path = artifact_dir / "strategy-bundle.json"
+    context_path = artifact_dir / "strategy-context.json"
+    tasks_path = artifact_dir / "tasks.json"
+    if not _tracker_enabled(config):
+        return bundle_path, context_path, tasks_path
+
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    api_base = str(config.get("api_base") or "").strip()
+    owner = str(config.get("owner") or "").strip()
+    uid = str(config.get("uid") or "").strip()
+    loop_name = str(config.get("loop_name") or "liuxinyu-ai-loop").strip()
+    account_type = str(config.get("account_type") or "FACEBOOK").strip()
+    min_accounts = str(int(config.get("min_accounts") or 0))
+    execute = str(config.get("execute") or "").strip().lower() in {"1", "true", "yes", "on"}
+    if not api_base or not owner:
+        _write_tracker_error(bundle_path, stage="prepare", error="missing api_base or owner in conf/video_pipeline_tracker.json")
+        _write_tracker_error(context_path, stage="claim", error="missing api_base or owner in conf/video_pipeline_tracker.json")
+        return bundle_path, context_path, tasks_path
+
+    pull_cmd = [
+        sys.executable,
+        str(ROOT_DIR / "tools" / "video-pipeline-tracker" / "scripts" / "pull_dashboard_strategy.py"),
+        "--api-base",
+        api_base,
+        "--owner",
+        owner,
+        "--uid",
+        uid,
+        "--loop-name",
+        loop_name,
+        "--account-type",
+        account_type,
+        "--min-accounts",
+        min_accounts,
+        "--output",
+        str(bundle_path),
+    ]
+    if not _run_tracker_command(pull_cmd, log_path=log_path, stage="pull_strategy_bundle", fallback_output=bundle_path):
+        _write_tracker_error(context_path, stage="claim_strategy", error="strategy bundle unavailable")
+        return bundle_path, context_path, tasks_path
+
+    claim_cmd = [
+        sys.executable,
+        str(ROOT_DIR / "tools" / "video-pipeline-tracker" / "scripts" / "claim_strategy_binding.py"),
+        "--api-base",
+        api_base,
+        "--owner",
+        owner,
+        "--loop-name",
+        loop_name,
+        "--round-name",
+        label,
+        "--strategy-bundle",
+        str(bundle_path),
+        "--output",
+        str(context_path),
+    ]
+    if execute:
+        claim_cmd.append("--execute")
+    _run_tracker_command(claim_cmd, log_path=log_path, stage="claim_strategy", fallback_output=context_path)
+    return bundle_path, context_path, tasks_path
+
+
+def _push_tracker_artifacts(
+    *,
+    config: dict,
+    line_name: str,
+    label: str,
+    json_path: Path,
+    context_path: Path,
+    tasks_path: Path,
+    log_path: Path,
+) -> None:
+    if not _tracker_enabled(config):
+        return
+    api_base = str(config.get("api_base") or "").strip()
+    owner = str(config.get("owner") or "").strip()
+    uid = str(config.get("uid") or "").strip()
+    loop_name = str(config.get("loop_name") or "liuxinyu-ai-loop").strip()
+    execute = str(config.get("execute") or "").strip().lower() in {"1", "true", "yes", "on"}
+    if not api_base or not owner:
+        _write_tracker_error(tasks_path, stage="push_result", error="missing api_base or owner in conf/video_pipeline_tracker.json")
+        return
+    cmd = [
+        sys.executable,
+        str(ROOT_DIR / "scripts" / "push-loop-round-to-tracker.py"),
+        "--round-json",
+        str(json_path),
+        "--strategy-context",
+        str(context_path),
+        "--owner",
+        owner,
+        "--uid",
+        uid,
+        "--loop-name",
+        loop_name,
+        "--round-name",
+        label,
+        "--line-name",
+        line_name,
+        "--api-base",
+        api_base,
+        "--output",
+        str(tasks_path),
+    ]
+    if execute:
+        cmd.append("--execute")
+    _run_tracker_command(cmd, log_path=log_path, stage="push_round_result", fallback_output=tasks_path)
+
+
 def _next_round_name(run_dir: Path) -> str:
     max_index = 0
     for path in run_dir.glob("round*.json"):
@@ -212,6 +374,7 @@ def main() -> int:
     allow_reuse = _truthy(os.getenv("BARRY_LOOP_ALLOW_ACCOUNT_REUSE", "1"))
     realtime_enabled = "1" if _truthy(os.getenv("BARRY_REALTIME_RANK_ENABLED", "0")) else "0"
     realtime_material_only = "1" if _truthy(os.getenv("BARRY_LOOP_REALTIME_MATERIAL_ONLY", "0")) else "0"
+    tracker_config = _load_tracker_config()
 
     while True:
         if wait_for_line and wait_for_line_pool:
@@ -281,6 +444,14 @@ def main() -> int:
         started = datetime.now().strftime("%F %T")
         line_report_dir = report_dir / round_name
         line_report_dir.mkdir(parents=True, exist_ok=True)
+        tracker_dir = run_dir / round_name
+        _bundle_path, context_path, tasks_path = _prepare_tracker_artifacts(
+            config=tracker_config,
+            line_name=line_name,
+            label=label,
+            artifact_dir=tracker_dir,
+            log_path=log_path,
+        )
         cmd = [
             "env",
             "BARRY_FEISHU_TEST_PUSH=0",
@@ -340,6 +511,15 @@ def main() -> int:
             label=label,
             started=started,
             requested_arg=requested,
+        )
+        _push_tracker_artifacts(
+            config=tracker_config,
+            line_name=line_name,
+            label=label,
+            json_path=json_path,
+            context_path=context_path,
+            tasks_path=tasks_path,
+            log_path=log_path,
         )
         if (
             _is_realtime_rank_line(line_name)

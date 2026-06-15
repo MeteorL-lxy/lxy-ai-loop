@@ -142,6 +142,49 @@ DEFAULT_NOVEL_WORK_DIR = _resolve_path_env(
 )
 ACCOUNT_POOL_FILE = Path(__file__).resolve().parents[1] / "conf" / "account_pools.json"
 VIDU_API_BASE = os.getenv("BARRY_VIDEO_VIDU_API") or "https://api.vidu.cn/ent/v2"
+PROJECT_ROOT_DIR = Path(__file__).resolve().parents[1]
+PROJECT_DELETE_ALLOWED_ROOTS = (
+    PROJECT_ROOT_DIR / "data",
+    PROJECT_ROOT_DIR / "runtime",
+    DEFAULT_NOVEL_DOWNLOAD_DIR,
+    DEFAULT_NOVEL_TMP_DIR,
+    DEFAULT_NOVEL_WORK_DIR,
+)
+PROJECT_DELETE_PROTECTED_NAMES = {
+    ".git",
+    "backend",
+    "bin",
+    "conf",
+    "docs",
+    "ops",
+    "scripts",
+    "skills",
+    "tools",
+}
+
+
+def _is_relative_to_path(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def _validate_cleanup_target(path: Path) -> tuple[bool, str]:
+    try:
+        resolved = path.expanduser().resolve()
+    except OSError as exc:
+        return False, f"path resolve failed: {exc}"
+    if resolved == PROJECT_ROOT_DIR or PROJECT_ROOT_DIR in resolved.parents:
+        rel = resolved.relative_to(PROJECT_ROOT_DIR)
+        if rel.parts and rel.parts[0] in PROJECT_DELETE_PROTECTED_NAMES:
+            return False, "refuse to delete project source/config directory"
+        if not any(_is_relative_to_path(resolved, root.resolve()) for root in PROJECT_DELETE_ALLOWED_ROOTS):
+            return False, "refuse to delete project file outside artifact roots"
+    if resolved in {Path.home().resolve(), Path(tempfile.gettempdir()).resolve()}:
+        return False, "refuse to delete home or temp root"
+    return True, ""
 
 PLATFORMS = {
     "dramabox": "DramaBox",
@@ -876,6 +919,10 @@ def _cleanup_novel_generated_files(video_result: dict) -> dict[str, object]:
         seen.add(path)
         try:
             target = Path(path).expanduser().resolve()
+            allowed, reason = _validate_cleanup_target(target)
+            if not allowed:
+                errors.append(f"{path}: {reason}")
+                continue
             if target.exists():
                 target.unlink()
                 deleted_paths.append(str(target))
@@ -890,6 +937,9 @@ def _cleanup_novel_generated_files(video_result: dict) -> dict[str, object]:
         cleanup_dirs.append(Path(output_root).expanduser() / output_run_date)
     for directory in cleanup_dirs:
         try:
+            allowed, _reason = _validate_cleanup_target(directory)
+            if not allowed:
+                continue
             if directory.exists() and directory.is_dir() and not any(directory.iterdir()):
                 directory.rmdir()
         except OSError:

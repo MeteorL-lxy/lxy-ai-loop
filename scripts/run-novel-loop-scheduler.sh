@@ -39,6 +39,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
+safe_remove_novel_artifact_dir() {
+  local target="$1"
+  [ -n "$target" ] || return 0
+  case "$target" in
+    "$HOME/Downloads/barry-video-novels"|"$HOME/Downloads/barry-video-novels"/*|/tmp/barry-video-novels|/tmp/barry-video-novels/*|/tmp/barry-video-novels-work|/tmp/barry-video-novels-work/*|/root/Downloads/liuxinyu-ai-loop-novels|/root/Downloads/liuxinyu-ai-loop-novels/*|/tmp/liuxinyu-ai-loop-novels|/tmp/liuxinyu-ai-loop-novels/*|/tmp/liuxinyu-ai-loop-novels-work|/tmp/liuxinyu-ai-loop-novels-work/*)
+      rm -rf "$target" 2>/dev/null || true
+      ;;
+    *)
+      log "跳过异常小说清理路径：$target"
+      ;;
+  esac
+}
+
 timestamp_for_day() {
   python3 - "$1" "$2" <<'PY'
 from datetime import datetime
@@ -133,7 +146,8 @@ while true; do
     log "${ROUND_ID} 返回非零状态，已保留结果文件：$JSON_PATH"
   fi
 
-  rm -rf "${BARRY_VIDEO_NOVEL_DOWNLOAD_DIR:-$HOME/Downloads/barry-video-novels}" "${BARRY_VIDEO_NOVEL_TMP_DIR:-/tmp/barry-video-novels}" 2>/dev/null || true
+  safe_remove_novel_artifact_dir "${BARRY_VIDEO_NOVEL_DOWNLOAD_DIR:-$HOME/Downloads/barry-video-novels}"
+  safe_remove_novel_artifact_dir "${BARRY_VIDEO_NOVEL_TMP_DIR:-/tmp/barry-video-novels}"
   log "${ROUND_ID} 已清理服务器小说视频产物目录。"
 
   NOW_EPOCH="$(date +%s)"
