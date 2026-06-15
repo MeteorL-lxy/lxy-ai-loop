@@ -14,7 +14,6 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT_DIR / "backend"))
 
 from flywheel.daily_loop_targets import get_pool_target_status, select_balanced_account_ids  # noqa: E402
-from flywheel.daily_loop_targets import reset_success_target_window  # noqa: E402
 
 
 def _truthy(value: str | None) -> bool:
@@ -30,6 +29,30 @@ def _env_int(name: str, default: int) -> int:
 
 def _log(message: str) -> None:
     print(f"[{datetime.now().strftime('%F %T')}] {message}", flush=True)
+
+
+def _read_log_tail_from_offset(log_path: Path, start_offset: int) -> str:
+    try:
+        with log_path.open("r", encoding="utf-8", errors="ignore") as handle:
+            handle.seek(max(0, int(start_offset)))
+            return handle.read()
+    except Exception:
+        return ""
+
+
+def _is_realtime_no_material_error(stderr_text: str) -> bool:
+    text = str(stderr_text or "")
+    return any(
+        marker in text
+        for marker in (
+            "实时榜线路当前没有可下载外部素材",
+            "实时榜线路已拉到外部素材候选，但没有可直接进入剪辑的素材",
+        )
+    )
+
+
+def _is_realtime_rank_line(line_name: str) -> bool:
+    return str(line_name or "").strip().lower() in {"realtime", "realtime_day", "realtime_single"}
 
 
 def _runtime_paths(line_name: str) -> tuple[str, Path, Path, Path]:
@@ -179,9 +202,9 @@ def main() -> int:
     idle_sleep = _env_int("BARRY_LOOP_LINE_IDLE_SLEEP_SECONDS", 300)
     cycle_sleep = _env_int("BARRY_LOOP_LINE_SLEEP_SECONDS", 60 if line_name == "realtime" else 60)
     error_sleep = _env_int("BARRY_LOOP_LINE_ERROR_SLEEP_SECONDS", 20)
-    target_reset_sleep = _env_int(
-        "BARRY_LOOP_LINE_TARGET_RESET_SLEEP_SECONDS",
-        3600 if line_name == "realtime" else 0,
+    realtime_no_material_sleep = _env_int(
+        "BARRY_LOOP_REALTIME_NO_MATERIAL_SLEEP_SECONDS",
+        3600 if _is_realtime_rank_line(line_name) else 0,
     )
     creative_list_material_only = "1" if _truthy(os.getenv("BARRY_LOOP_CREATIVE_LIST_MATERIAL_ONLY", "0")) else "0"
     wait_for_line = str(os.getenv("BARRY_LOOP_WAIT_FOR_LINE") or "").strip().lower()
@@ -219,24 +242,12 @@ def main() -> int:
         unmet_accounts = int(status.get("unmet_account_count") or 0)
         remaining_deficit = int(status.get("remaining_success_deficit") or 0)
         if requested <= 0 or eligible_accounts <= 0:
-            if (
-                line_name == "realtime"
-                and target_reset_sleep > 0
-                and eligible_accounts > 0
-                and unmet_accounts <= 0
-                and remaining_deficit <= 0
-            ):
+            if unmet_accounts <= 0 and remaining_deficit <= 0:
                 _log(
-                    f"{line_name} 全部达标：账号池={pool_name}，账号日目标={account_success_target}，"
-                    f"已达标账号={eligible_accounts}；{target_reset_sleep}s 后重置达标标签并继续。"
+                    f"{line_name} 已达成账号目标并停止：账号池={pool_name}，账号日目标={account_success_target}，"
+                    f"已达标账号={int(status.get('total_pool_size') or eligible_accounts or 0)}。"
                 )
-                time.sleep(max(5, target_reset_sleep))
-                reset_payload = reset_success_target_window(run_dir)
-                _log(
-                    f"{line_name} 达标标签已重置：generation={int(reset_payload.get('generation') or 0)}，"
-                    f"reset_at={str(reset_payload.get('reset_at') or '').strip()}。"
-                )
-                continue
+                return 0
             _log(
                 f"{line_name} 空闲：账号池={pool_name}，账号日目标={account_success_target}，"
                 f"未达标账号={unmet_accounts}，剩余缺口={remaining_deficit}；{idle_sleep}s 后继续检查。"
@@ -279,8 +290,12 @@ def main() -> int:
             "BARRY_LOOP_ROUND_SCHEDULED_TIME=continuous",
             f"BARRY_LOOP_ROUND_STARTED_AT={started}",
             f"BARRY_REALTIME_RANK_ENABLED={realtime_enabled}",
-            "python3",
-            "backend/flywheel_cli.py",
+        ]
+        if flywheel_config:
+            cmd.append(f"FLYWHEEL_CONFIG={flywheel_config}")
+        cmd.extend([
+            "barry-video",
+            "backend",
             "run-batch-drama",
             "--execute",
             "--count",
@@ -288,9 +303,7 @@ def main() -> int:
             "--publish-platform",
             platform,
             "--json",
-        ]
-        if flywheel_config:
-            cmd.extend(["--config", flywheel_config])
+        ])
         if allow_reuse:
             cmd.append("--allow-account-reuse")
         for account_id in account_ids:
@@ -309,6 +322,7 @@ def main() -> int:
         with log_path.open("a", encoding="utf-8") as log_handle, json_path.open("w", encoding="utf-8") as json_handle:
             log_handle.write(f"\n[{datetime.now().strftime('%F %T')}] $ {' '.join(cmd)}\n")
             log_handle.flush()
+            log_offset = log_handle.tell()
             proc = subprocess.run(
                 cmd,
                 cwd=str(ROOT_DIR),
@@ -327,6 +341,17 @@ def main() -> int:
             started=started,
             requested_arg=requested,
         )
+        if (
+            _is_realtime_rank_line(line_name)
+            and realtime_no_material_sleep > 0
+            and proc.returncode != 0
+            and _is_realtime_no_material_error(_read_log_tail_from_offset(log_path, log_offset))
+        ):
+            _log(
+                f"{label} 未拿到可用实时榜素材：等待 {realtime_no_material_sleep}s 后再拉取下一轮，不重置账号达标标签。"
+            )
+            time.sleep(max(5, realtime_no_material_sleep))
+            continue
         _log(
             f"{label} 完成：成功 {metrics['success']}，失败 {metrics['failed']}，处理中 {metrics['processing']}，未提交 {metrics['unsubmitted']}。"
         )

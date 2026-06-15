@@ -26,6 +26,7 @@ from flywheel.clipping.ai_cut_animation import (
     DEFAULT_TEMPLATE_ID,
     DEFAULT_USE_AUTO_MIGRATION,
 )
+from flywheel.selection.realtime_rank_source import mark_realtime_hour_exhausted
 
 
 MODULE_ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -804,6 +805,10 @@ def _select_realtime_external_sources(args: argparse.Namespace, config, *, targe
         external_candidates.append(candidate)
 
     if not external_candidates:
+        mark_realtime_hour_exhausted(
+            "当前小时缓存素材已耗尽或未命中可下载外部素材",
+            target_publish_platforms=[publish_platform],
+        )
         raise SystemExit(
             "实时榜线路当前没有可下载外部素材；已跳过普通短剧候选池，不回退到官方选剧逻辑。"
         )
@@ -825,6 +830,10 @@ def _select_realtime_external_sources(args: argparse.Namespace, config, *, targe
         sources.append({"drama": drama, "episode": episode})
 
     if not sources:
+        mark_realtime_hour_exhausted(
+            "当前小时缓存候选均无法直接进入剪辑",
+            target_publish_platforms=[publish_platform],
+        )
         raise SystemExit(
             "实时榜线路已拉到外部素材候选，但没有可直接进入剪辑的素材；本轮不回退到官方选剧逻辑。"
         )

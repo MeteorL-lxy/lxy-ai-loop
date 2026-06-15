@@ -415,11 +415,102 @@ function renderTopPlay(overview) {
   `).join("");
 }
 
+function fmtTrendValue(value, kind = "number") {
+  const num = Number(value || 0);
+  if (!Number.isFinite(num)) return "-";
+  if (kind === "money") return fmtMoney(num);
+  if (kind === "percent") return `${num.toFixed(2)}%`;
+  if (kind === "integer") return fmtNum(Math.round(num));
+  return num.toLocaleString("zh-CN", { maximumFractionDigits: 3 });
+}
+
 function renderHistory(overview) {
   const payload = overview.trend_analyzer || overview.historical_daily_report || {};
   const node = qs("history-block");
   if (payload && payload.available) {
-    node.innerHTML = `<div class="history-card">历史趋势逻辑已接回，但当前前端还没有展开渲染这部分细项。</div>`;
+    const renderCard = (card) => {
+      const deltaLine = card.delta === null || card.delta === undefined
+        ? ""
+        : `<div class="history-delta ${Number(card.delta || 0) >= 0 ? "up" : "down"}">
+            较前一天 ${Number(card.delta || 0) >= 0 ? "+" : ""}${fmtTrendValue(card.delta, card.kind)}
+            ${card.delta_pct === null || card.delta_pct === undefined ? "" : ` · ${Number(card.delta_pct || 0) >= 0 ? "+" : ""}${card.delta_pct.toFixed(2)}%`}
+          </div>`;
+      return `
+        <article class="history-metric-card">
+          <div class="history-metric-label">${esc(card.label || "-")}</div>
+          <div class="history-metric-value">${esc(fmtTrendValue(card.value, card.kind))}</div>
+          ${deltaLine}
+          <div class="history-metric-note">${esc(card.note || "-")}</div>
+        </article>
+      `;
+    };
+
+    const dailyRows = payload.daily_rows || [];
+    node.innerHTML = `
+      <div class="history-summary">
+        <div class="history-summary-main">
+          <strong>分析日报口径</strong>
+          <span>固定基线 ${esc(payload.baseline_start || "-")} 至 ${esc(payload.baseline_end || "-")} · 最新统计 ${esc(payload.latest_day || "-")}</span>
+        </div>
+        <div class="history-summary-sub">${esc(payload.latest_note || "-")}</div>
+        ${payload.latest_summary ? `<div class="history-summary-tip">${esc(payload.latest_summary)}</div>` : ""}
+      </div>
+
+      <section class="history-section">
+        <h3>固定基线均值</h3>
+        <div class="history-card-grid">
+          ${(payload.baseline_cards || []).map(renderCard).join("")}
+        </div>
+      </section>
+
+      <section class="history-section">
+        <h3>最新一天对比前一天</h3>
+        <div class="history-card-grid">
+          ${(payload.compare_cards || []).map(renderCard).join("")}
+        </div>
+      </section>
+
+      <section class="history-section">
+        <h3>从 5 月 19 号到最新一天的均值</h3>
+        <div class="history-card-grid compact">
+          ${(payload.running_average_cards || []).map(renderCard).join("")}
+        </div>
+      </section>
+
+      <section class="history-section">
+        <h3>最近日报时间线</h3>
+        <div class="table-wrap">
+          <table class="data-table compact">
+            <thead>
+              <tr>
+                <th>日期</th>
+                <th>发布</th>
+                <th>成功</th>
+                <th>失败</th>
+                <th>播放</th>
+                <th>点击</th>
+                <th>互动</th>
+                <th>成功率</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${dailyRows.length ? dailyRows.map((row) => `
+                <tr>
+                  <td>${esc(row.day || "-")}</td>
+                  <td>${fmtNum(row.publish_count)}</td>
+                  <td>${fmtNum(row.success_count)}</td>
+                  <td>${fmtNum(row.failed_count)}</td>
+                  <td>${fmtNum(row.view_total)}</td>
+                  <td>${fmtNum(row.click_total)}</td>
+                  <td>${fmtNum(row.interaction_total)}</td>
+                  <td>${fmtPct(row.success_rate)}</td>
+                </tr>
+              `).join("") : '<tr><td colspan="8">暂无趋势样本</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    `;
     return;
   }
   node.innerHTML = `<div class="empty-state">${esc(payload.note || "这部分沿用 ai-loop-reporting 的趋势逻辑，当前本地还没有接回。")}</div>`;

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import json
+from contextlib import contextmanager
 import random
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from time import time
+from typing import Any
 
 from inbeidou_cli import get_publish_accounts, require_success
 
@@ -18,6 +22,14 @@ UNSUPPORTED_REEL_PATTERNS = (
 )
 
 SUCCESS_TARGET_RESET_FILE = ".success_target_reset.json"
+REEL_BLOCK_POOL_NAME = "facebook_drama_reel_block_pool"
+REEL_BLOCK_THRESHOLD = 5
+REEL_BLOCK_STATE_DIR = "runtime/account-flags"
+REEL_BLOCK_STATE_FILE = "reel_publish_block_state.json"
+REEL_BLOCK_LOCK_FILE = "reel_publish_block_state.lock"
+REEL_BLOCK_PROCESSED_EVENT_LIMIT = 20000
+REEL_BLOCK_HISTORY_LIMIT = 30
+REEL_BLOCK_EXCLUDED_MOVE_POOLS = {REEL_BLOCK_POOL_NAME}
 
 
 def _is_unsupported_reel_reason(message: str) -> bool:
@@ -32,6 +44,277 @@ def _load_account_pool_ids(root_dir: Path, pool_name: str) -> list[str]:
     if not isinstance(pool, dict):
         raise RuntimeError(f"未找到账号池: {pool_name}")
     return [str(item).strip() for item in (pool.get("account_ids") or []) if str(item).strip()]
+
+
+def _load_account_pools_config(root_dir: Path) -> dict[str, Any]:
+    config_path = root_dir / "conf" / "account_pools.json"
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temp_path.replace(path)
+
+
+def _save_account_pools_config(root_dir: Path, payload: dict[str, Any]) -> None:
+    _atomic_write_json(root_dir / "conf" / "account_pools.json", payload)
+
+
+def _reel_block_state_root(root_dir: Path) -> Path:
+    return root_dir / REEL_BLOCK_STATE_DIR
+
+
+def _reel_block_state_path(root_dir: Path) -> Path:
+    return _reel_block_state_root(root_dir) / REEL_BLOCK_STATE_FILE
+
+
+def _reel_block_lock_path(root_dir: Path) -> Path:
+    return _reel_block_state_root(root_dir) / REEL_BLOCK_LOCK_FILE
+
+
+@contextmanager
+def _reel_block_lock(root_dir: Path):
+    lock_path = _reel_block_lock_path(root_dir)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _load_reel_block_state(root_dir: Path) -> dict[str, Any]:
+    path = _reel_block_state_path(root_dir)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    accounts = payload.get("accounts")
+    processed = payload.get("processed_event_ids")
+    payload["accounts"] = accounts if isinstance(accounts, dict) else {}
+    payload["processed_event_ids"] = processed if isinstance(processed, list) else []
+    payload["updated_at"] = str(payload.get("updated_at") or "")
+    return payload
+
+
+def _save_reel_block_state(root_dir: Path, payload: dict[str, Any]) -> None:
+    payload["updated_at"] = datetime.now().strftime("%F %T")
+    _atomic_write_json(_reel_block_state_path(root_dir), payload)
+
+
+def _ensure_reel_block_pool(pools: dict[str, Any]) -> dict[str, Any]:
+    if REEL_BLOCK_POOL_NAME not in pools or not isinstance(pools.get(REEL_BLOCK_POOL_NAME), dict):
+        pools[REEL_BLOCK_POOL_NAME] = {
+            "platform": "FACEBOOK",
+            "description": "Temporary pool for accounts that repeatedly fail with 'cannot publish reel'. Use reel_publish_block_state to inspect which line they were moved from.",
+            "account_ids": [],
+        }
+    pool = pools[REEL_BLOCK_POOL_NAME]
+    account_ids = pool.get("account_ids")
+    pool["account_ids"] = account_ids if isinstance(account_ids, list) else []
+    return pool
+
+
+def _reel_event_id(*, run_dir: Path, round_name: str, item_index: int, account_id: str, outcome: str, reason: str) -> str:
+    raw = "::".join(
+        [
+            str(run_dir),
+            str(round_name or ""),
+            str(item_index or 0),
+            str(account_id or ""),
+            str(outcome or ""),
+            str(reason or ""),
+        ]
+    )
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _append_reel_history(account_state: dict[str, Any], entry: dict[str, Any]) -> None:
+    history = account_state.get("history")
+    if not isinstance(history, list):
+        history = []
+    history.append(entry)
+    account_state["history"] = history[-REEL_BLOCK_HISTORY_LIMIT:]
+
+
+def _move_account_to_reel_block_pool(
+    *,
+    root_dir: Path,
+    pools: dict[str, Any],
+    account_id: str,
+    line_name: str,
+    source_pool_name: str,
+    account_state: dict[str, Any],
+) -> bool:
+    changed = False
+    target_pool = _ensure_reel_block_pool(pools)
+    target_ids = [str(item).strip() for item in (target_pool.get("account_ids") or []) if str(item).strip()]
+    if account_id not in target_ids:
+        target_ids.append(account_id)
+        target_pool["account_ids"] = target_ids
+        changed = True
+
+    for pool_name, pool in pools.items():
+        if pool_name in REEL_BLOCK_EXCLUDED_MOVE_POOLS or not isinstance(pool, dict):
+            continue
+        if not str(pool_name).startswith("facebook_drama_"):
+            continue
+        pool_ids = [str(item).strip() for item in (pool.get("account_ids") or []) if str(item).strip()]
+        if account_id in pool_ids:
+            pool["account_ids"] = [item for item in pool_ids if item != account_id]
+            changed = True
+
+    account_state["moved_to_pool"] = REEL_BLOCK_POOL_NAME
+    account_state["moved_at"] = datetime.now().strftime("%F %T")
+    account_state["moved_from_line"] = str(line_name or "")
+    account_state["moved_from_pool"] = str(source_pool_name or "")
+    account_state["moved_due_to_reel_block_streak"] = int(account_state.get("current_reel_block_streak") or 0)
+    _append_reel_history(
+        account_state,
+        {
+            "action": "moved_to_reel_block_pool",
+            "line_name": str(line_name or ""),
+            "source_pool_name": str(source_pool_name or ""),
+            "at": datetime.now().strftime("%F %T"),
+            "streak": int(account_state.get("current_reel_block_streak") or 0),
+        },
+    )
+    if changed:
+        _save_account_pools_config(root_dir, pools)
+    return changed
+
+
+def _apply_reel_block_tracking(
+    *,
+    root_dir: Path,
+    run_dir: Path,
+    pool_name: str,
+    round_path: Path,
+    item_rows: list[dict[str, Any]],
+    detail_by_index: dict[int, dict[str, Any]],
+) -> set[str]:
+    unsupported_accounts: set[str] = set()
+    line_name = str(run_dir.name or "").strip()
+    with _reel_block_lock(root_dir):
+        state = _load_reel_block_state(root_dir)
+        pools = _load_account_pools_config(root_dir)
+        _ensure_reel_block_pool(pools)
+        accounts = state.get("accounts")
+        processed_ids = state.get("processed_event_ids")
+        processed_set = {str(item).strip() for item in processed_ids if str(item).strip()}
+        processed_list = [str(item).strip() for item in processed_ids if str(item).strip()]
+        state_changed = False
+        pools_changed = False
+
+        for item in item_rows:
+            item = dict(item)
+            index = int(item.get("index") or 0)
+            account = item.get("account") if isinstance(item.get("account"), dict) else {}
+            account_id = str(account.get("account_id") or "").strip()
+            if not account_id:
+                continue
+            detail = detail_by_index.get(index, {})
+            outcome = str(detail.get("发布情况") or "").strip()
+            reason = str(detail.get("失败原因") or detail.get("错误") or "").strip()
+            if not outcome and not reason:
+                continue
+
+            event_id = _reel_event_id(
+                run_dir=run_dir,
+                round_name=str(round_path.stem or ""),
+                item_index=index,
+                account_id=account_id,
+                outcome=outcome,
+                reason=reason,
+            )
+            if event_id in processed_set:
+                if _is_unsupported_reel_reason(reason):
+                    unsupported_accounts.add(account_id)
+                continue
+
+            processed_set.add(event_id)
+            processed_list.append(event_id)
+            processed_list = processed_list[-REEL_BLOCK_PROCESSED_EVENT_LIMIT:]
+            account_state = accounts.get(account_id)
+            if not isinstance(account_state, dict):
+                account_state = {}
+                accounts[account_id] = account_state
+
+            if _is_unsupported_reel_reason(reason):
+                unsupported_accounts.add(account_id)
+                account_state["current_reel_block_streak"] = int(account_state.get("current_reel_block_streak") or 0) + 1
+                account_state["total_reel_block_hits"] = int(account_state.get("total_reel_block_hits") or 0) + 1
+                account_state["last_reel_block_reason"] = reason
+                account_state["last_reel_block_line"] = line_name
+                account_state["last_reel_block_round"] = str(round_path.stem or "")
+                account_state["last_reel_block_at"] = datetime.now().strftime("%F %T")
+                _append_reel_history(
+                    account_state,
+                    {
+                        "action": "reel_block_hit",
+                        "line_name": line_name,
+                        "source_pool_name": str(pool_name or ""),
+                        "round_name": str(round_path.stem or ""),
+                        "reason": reason,
+                        "at": datetime.now().strftime("%F %T"),
+                        "streak": int(account_state.get("current_reel_block_streak") or 0),
+                    },
+                )
+                if int(account_state.get("current_reel_block_streak") or 0) >= REEL_BLOCK_THRESHOLD:
+                    pools_changed = (
+                        _move_account_to_reel_block_pool(
+                            root_dir=root_dir,
+                            pools=pools,
+                            account_id=account_id,
+                            line_name=line_name,
+                            source_pool_name=pool_name,
+                            account_state=account_state,
+                        )
+                        or pools_changed
+                    )
+                state_changed = True
+                continue
+
+            if outcome:
+                previous_streak = int(account_state.get("current_reel_block_streak") or 0)
+                account_state["current_reel_block_streak"] = 0
+                account_state["last_non_reel_outcome"] = outcome
+                account_state["last_non_reel_reason"] = reason
+                account_state["last_non_reel_line"] = line_name
+                account_state["last_non_reel_round"] = str(round_path.stem or "")
+                account_state["last_non_reel_at"] = datetime.now().strftime("%F %T")
+                if previous_streak > 0:
+                    _append_reel_history(
+                        account_state,
+                        {
+                            "action": "reel_block_streak_reset",
+                            "line_name": line_name,
+                            "source_pool_name": str(pool_name or ""),
+                            "round_name": str(round_path.stem or ""),
+                            "outcome": outcome,
+                            "reason": reason,
+                            "at": datetime.now().strftime("%F %T"),
+                            "previous_streak": previous_streak,
+                        },
+                    )
+                state_changed = True
+
+        if state_changed:
+            state["processed_event_ids"] = processed_list
+            _save_reel_block_state(root_dir, state)
+        elif pools_changed:
+            _save_reel_block_state(root_dir, state)
+
+    return unsupported_accounts
 
 
 def _load_success_target_reset_epoch(run_dir: Path) -> float:
@@ -65,7 +348,7 @@ def reset_success_target_window(run_dir: str | Path) -> dict[str, object]:
     return reset_payload
 
 
-def _loop_success_stats(run_dir: Path) -> tuple[dict[str, int], set[str]]:
+def _loop_success_stats(root_dir: Path, run_dir: Path, pool_name: str) -> tuple[dict[str, int], set[str]]:
     success_counts: dict[str, int] = defaultdict(int)
     unsupported_accounts: set[str] = set()
     reset_epoch = _load_success_target_reset_epoch(run_dir)
@@ -83,6 +366,16 @@ def _loop_success_stats(run_dir: Path) -> tuple[dict[str, int], set[str]]:
             for row in detail_rows
             if int(row.get("序号") or 0) > 0
         }
+        unsupported_accounts.update(
+            _apply_reel_block_tracking(
+                root_dir=root_dir,
+                run_dir=run_dir,
+                pool_name=pool_name,
+                round_path=path,
+                item_rows=item_rows,
+                detail_by_index=detail_by_index,
+            )
+        )
         for item in item_rows:
             item = dict(item)
             index = int(item.get("index") or 0)
@@ -114,7 +407,7 @@ def select_balanced_account_ids(
     root = Path(root_dir).resolve()
     run = Path(run_dir).resolve()
     pool_ids = set(_load_account_pool_ids(root, pool_name))
-    success_counts, unsupported_accounts = _loop_success_stats(run)
+    success_counts, unsupported_accounts = _loop_success_stats(root, run, pool_name)
 
     accounts = require_success(get_publish_accounts(), "获取发布账号列表")
     active_pool_accounts = [
@@ -188,7 +481,7 @@ def get_pool_target_status(
     root = Path(root_dir).resolve()
     run = Path(run_dir).resolve()
     pool_ids = set(_load_account_pool_ids(root, pool_name))
-    success_counts, unsupported_accounts = _loop_success_stats(run)
+    success_counts, unsupported_accounts = _loop_success_stats(root, run, pool_name)
 
     accounts = require_success(get_publish_accounts(), "获取发布账号列表")
     active_pool_accounts = [

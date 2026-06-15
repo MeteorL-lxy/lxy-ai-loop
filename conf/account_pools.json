@@ -187,6 +187,11 @@
       "3407"
     ]
   },
+  "facebook_drama_reel_block_pool": {
+    "platform": "FACEBOOK",
+    "description": "Temporary holding pool for accounts that repeatedly fail with 'cannot publish reel'. See runtime/account-flags/reel_publish_block_state.json for which line each account was moved from.",
+    "account_ids": []
+  },
   "facebook_drama_reserve_pool": {
     "platform": "FACEBOOK",
     "description": "Reserve Facebook short-drama pool. Contains the remaining active accounts that are not currently assigned to any execution line.",

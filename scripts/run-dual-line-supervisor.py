@@ -52,8 +52,8 @@ LINE_CONFIGS = {
         "sleep_seconds": _env("BARRY_LOOP_REALTIME_SINGLE_SLEEP_SECONDS", "30"),
         "idle_sleep_seconds": _env("BARRY_LOOP_REALTIME_SINGLE_IDLE_SLEEP_SECONDS", "300"),
         "error_sleep_seconds": _env("BARRY_LOOP_REALTIME_SINGLE_ERROR_SLEEP_SECONDS", "20"),
-        "wait_for_line": _env("BARRY_LOOP_REALTIME_SINGLE_WAIT_FOR_LINE", "realtime"),
-        "wait_for_line_pool": _env("BARRY_LOOP_REALTIME_SINGLE_WAIT_FOR_LINE_POOL", "facebook_drama_realtime_pool"),
+        "wait_for_line": _env("BARRY_LOOP_REALTIME_SINGLE_WAIT_FOR_LINE", ""),
+        "wait_for_line_pool": _env("BARRY_LOOP_REALTIME_SINGLE_WAIT_FOR_LINE_POOL", ""),
         "log": TMP_DIR / "forever_realtime_single.log",
     },
     "realtime_day": {

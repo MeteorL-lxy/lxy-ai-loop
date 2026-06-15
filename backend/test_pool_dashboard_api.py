@@ -18,6 +18,9 @@ RUNTIME_ROOT = ROOT_DIR / "runtime"
 CONTINUOUS_ROOT = RUNTIME_ROOT / "continuous-loop"
 REPORT_CONTINUOUS_ROOT = RUNTIME_ROOT / "reports" / "continuous-test-summary"
 ACCOUNT_POOLS_PATH = ROOT_DIR / "conf" / "account_pools.json"
+ANALYSIS_REPORT_DIR = Path("/Users/xinyuliu/Downloads/AI Loop/分析日报")
+TREND_BASELINE_START = "2026-05-19"
+TREND_BASELINE_END = "2026-06-08"
 
 LINE_LABELS = {
     "ordinary": "普通池",
@@ -73,6 +76,10 @@ ACCOUNT_GROUP_META = {
     "facebook_drama_yourchannel_pool": {
         "label": "YourChannel 剧场线账号池",
         "description": "YourChannel 剧场线专用池，使用白名单剧名和剧场发布策略。",
+    },
+    "facebook_drama_reel_block_pool": {
+        "label": "Reel 限制账号池",
+        "description": "连续 5 次出现“不能发布 Reel 视频”后自动迁入，具体来源线路记录在 reel_publish_block_state 中。",
     },
     "facebook_novel_dedicated_10": {
         "label": "小说账号池",
@@ -161,6 +168,133 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _clean_publish_copy_text(text: Any) -> str:
+    raw = _text(text)
+    if not raw:
+        return ""
+    filtered: list[str] = []
+    for line in [part.strip() for part in raw.splitlines() if part.strip()]:
+        lowered = line.lower()
+        if "http" in lowered and ("watch" in lowered or "👉" in line or "查看" in line or "觀看" in line or "ver" in lowered):
+            continue
+        if any(
+            token in lowered
+            for token in (
+                "continue the story",
+                "find the full series",
+                "look up",
+                "continúa la historia",
+                "encuentra la serie completa",
+                "busca la",
+                "continuez l'histoire",
+                "découvrez la série complète",
+                "recherchez le",
+            )
+        ):
+            continue
+        if line.startswith("#"):
+            continue
+        filtered.append(line)
+    return "\n".join(filtered[:6]) or raw
+
+
+def _looks_like_stub_title(title: str) -> bool:
+    normalized = _text(title)
+    if not normalized:
+        return True
+    lowered = normalized.lower()
+    if "http" in lowered:
+        return True
+    if "👉" in normalized and len(normalized) <= 16:
+        return True
+    return False
+
+
+def _build_top_play_title(*, raw_title: Any, copy_text: str) -> str:
+    title = _text(raw_title)
+    if title and not _looks_like_stub_title(title):
+        return title
+    first_line = next((line.strip() for line in copy_text.splitlines() if line.strip()), "")
+    if not first_line:
+        return title or "未识别剧目"
+    return first_line[:36] + ("..." if len(first_line) > 36 else "")
+
+
+def _line_clip_method(line_name: str) -> str:
+    normalized = _text(line_name)
+    if normalized in {"realtime", "realtime_day", "realtime_single", "creative_list", "creative_list_day", "fbhot_test"}:
+        return "外部素材快切"
+    if normalized == "ordinary":
+        return "官方短剧补量"
+    if normalized == "yourchannel":
+        return "剧场白名单发布"
+    return ""
+
+
+def _parse_metric_number(value: Any) -> float | None:
+    text = _text(value)
+    if not text or text == "-":
+        return None
+    normalized = text.replace(",", "").replace("%", "").replace("¥", "").strip()
+    try:
+        return float(normalized)
+    except Exception:
+        return None
+
+
+def _number_to_int(value: Any) -> int:
+    parsed = _parse_metric_number(value)
+    if parsed is None:
+        return 0
+    return int(round(parsed))
+
+
+def _parse_markdown_table(text: str, heading: str) -> dict[str, str]:
+    marker = f"## {heading}"
+    start = text.find(marker)
+    if start < 0:
+        return {}
+    lines = text[start:].splitlines()[1:]
+    rows: dict[str, str] = {}
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if rows:
+                break
+            continue
+        if stripped.startswith("## "):
+            break
+        if not stripped.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        if cells[0] in {"指标", "---"} or cells[1] == "---":
+            continue
+        rows[cells[0]] = cells[1]
+    return rows
+
+
+def _parse_markdown_bullets(text: str, heading: str) -> list[str]:
+    marker = f"## {heading}"
+    start = text.find(marker)
+    if start < 0:
+        return []
+    lines = text[start:].splitlines()[1:]
+    bullets: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if bullets:
+                break
+            continue
+        if stripped.startswith("## "):
+            break
+        if stripped.startswith("- "):
+            bullets.append(stripped[2:].strip())
+    return bullets
 
 
 def _json_load(path: Path) -> dict[str, Any]:
@@ -683,6 +817,144 @@ class TestPoolDashboardService:
             pass
         return self._set_cached_remote(cache_key, 25, metrics)
 
+    def _fetch_publish_analysis_items(self, *, day_key: str) -> dict[str, Any]:
+        cache_key = f"publish-analysis-items:{day_key}"
+        cached = self._get_cached_remote(cache_key)
+        if cached is not None:
+            return cached
+        start_date = f"{day_key} 00:00:00" if day_key else ""
+        end_date = f"{day_key} 23:59:59" if day_key else ""
+        page_size = 100
+        page = 1
+        items: list[dict[str, Any]] = []
+        total_count = 0
+        summary_view = 0
+        summary_interaction = 0
+        while page <= 20:
+            body = require_success(
+                get_publish_analysis(
+                    page=page,
+                    page_size=page_size,
+                    social_type="FACEBOOK",
+                    start_date=start_date,
+                    end_date=end_date,
+                ),
+                "获取今日播放分析明细",
+            )
+            page_rows = body.get("items") if isinstance(body.get("items"), list) else []
+            if page == 1:
+                total_count = _safe_int((body.get("page") or {}).get("total_count"))
+                summary_view = _safe_int(body.get("view"))
+                summary_interaction = _safe_int(body.get("interaction"))
+            items.extend(dict(item) for item in page_rows if isinstance(item, dict))
+            if not page_rows:
+                break
+            if total_count and len(items) >= total_count:
+                break
+            page += 1
+        payload = {
+            "items": items,
+            "total_count": total_count or len(items),
+            "view_total": summary_view,
+            "interaction_total": summary_interaction,
+        }
+        return self._set_cached_remote(cache_key, 25, payload)
+
+    def _build_account_line_map(self) -> dict[str, str]:
+        account_line_map: dict[str, str] = {}
+        for group in self._load_account_groups():
+            group_key = _text(group.get("key"))
+            line_name = next((key for key, pool_key in LINE_POOL_KEYS.items() if pool_key == group_key), "")
+            if not line_name:
+                continue
+            for account_id in group.get("account_ids", []):
+                normalized_id = _text(account_id)
+                if normalized_id:
+                    account_line_map[normalized_id] = line_name
+        return account_line_map
+
+    def _load_analysis_report_rows(self) -> list[dict[str, Any]]:
+        cache_key = "analysis-report-rows"
+        cached = self._get_cached_remote(cache_key)
+        if cached is not None:
+            rows = cached.get("rows")
+            if isinstance(rows, list):
+                return [dict(item) for item in rows if isinstance(item, dict)]
+
+        rows: list[dict[str, Any]] = []
+        for path in sorted(ANALYSIS_REPORT_DIR.glob("发布数据分析日报_*.md")):
+            try:
+                text = path.read_text(encoding="utf-8")
+            except Exception:
+                continue
+
+            generated_at = ""
+            window_start = ""
+            window_end = ""
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("**生成时间**:"):
+                    generated_at = stripped.split(":", 1)[1].strip()
+                elif stripped.startswith("**统计窗口**:"):
+                    window_value = stripped.split(":", 1)[1].strip()
+                    if "至" in window_value:
+                        parts = [part.strip() for part in window_value.split("至", 1)]
+                        if len(parts) == 2:
+                            window_start, window_end = parts
+
+            overview = _parse_markdown_table(text, "总体概览")
+            if not overview:
+                continue
+            report_day = window_end or window_start or path.stem[-8:]
+            report_day = report_day.replace("/", "-").strip()
+            publish_count = _number_to_int(overview.get("当日发布视频总数"))
+            success_count = _number_to_int(overview.get("当日发布成功数"))
+            rows.append(
+                {
+                    "file_name": path.name,
+                    "generated_at": generated_at,
+                    "window_start": window_start,
+                    "window_end": window_end,
+                    "report_day": report_day,
+                    "publish_count": publish_count,
+                    "success_count": success_count,
+                    "failed_count": max(publish_count - success_count, 0),
+                    "view_total": _number_to_int(overview.get("总播放量")),
+                    "click_total": _number_to_int(overview.get("当日推广链接点击次数")),
+                    "interaction_total": _number_to_int(overview.get("总互动量")),
+                    "income_total": round(_safe_float(_parse_metric_number(overview.get("总收益"))), 2),
+                    "like_total": _number_to_int(overview.get("点赞数")),
+                    "comment_total": _number_to_int(overview.get("评论数")),
+                    "share_total": _number_to_int(overview.get("分享数")),
+                    "account_total": _number_to_int(overview.get("覆盖账号数")),
+                    "success_rate": round((success_count / publish_count) * 100, 2) if publish_count else 0.0,
+                    "overview": overview,
+                    "summary_lines": _parse_markdown_bullets(text, "结论摘要"),
+                }
+            )
+        rows.sort(key=lambda item: (_text(item.get("report_day")), _text(item.get("generated_at"))), reverse=True)
+        self._set_cached_remote(cache_key, 300, {"rows": rows})
+        return rows
+
+    def _trend_metric_card(
+        self,
+        *,
+        label: str,
+        value: float,
+        kind: str = "number",
+        note: str = "",
+        delta: float | None = None,
+        delta_pct: float | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "label": label,
+            "value": round(value, 3) if kind != "integer" else int(round(value)),
+            "kind": kind,
+            "note": note,
+            "delta": None if delta is None else round(delta, 3),
+            "delta_pct": None if delta_pct is None else round(delta_pct, 2),
+        }
+
     def _build_overall_summary(self, rounds: list[RoundArchive]) -> dict[str, Any]:
         account_groups = self._load_account_groups()
         line_pool_keys = set(LINE_POOL_KEYS.values())
@@ -835,12 +1107,80 @@ class TestPoolDashboardService:
         }
 
     def get_today_top_play(self, *, force: bool = False) -> dict[str, Any]:
-        today_key, _ = self._select_today_rounds()
+        day_key = date.today().isoformat()
+        if force:
+            self._remote_cache.pop(f"publish-analysis-items:{day_key}", None)
+        try:
+            analysis_payload = self._fetch_publish_analysis_items(day_key=day_key)
+        except Exception as exc:
+            return {
+                "available": False,
+                "day_key": day_key,
+                "items": [],
+                "note": f"今天的播放分析接口暂时没拿到数据：{exc}",
+            }
+
+        raw_items = analysis_payload.get("items") if isinstance(analysis_payload.get("items"), list) else []
+        total_count = _safe_int(analysis_payload.get("total_count"))
+        total_view = _safe_int(analysis_payload.get("view_total"))
+        account_line_map = self._build_account_line_map()
+        items: list[dict[str, Any]] = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            account_id = _text(item.get("social_id"))
+            line_name = account_line_map.get(account_id, "")
+            copy_text = _clean_publish_copy_text(item.get("text"))
+            view_count = _safe_int(item.get("views"))
+            like_count = _safe_int(item.get("likes"))
+            comment_count = _safe_int(item.get("comments"))
+            share_count = _safe_int(item.get("shares"))
+            items.append(
+                {
+                    "title": _build_top_play_title(raw_title=item.get("title"), copy_text=copy_text),
+                    "published_at": _text(item.get("post_date") or item.get("created_at")),
+                    "created_at": _text(item.get("created_at")),
+                    "account_name": _text(item.get("social_name")) or "未知账号",
+                    "account_id": account_id,
+                    "platform": _text(item.get("social_type") or "FACEBOOK") or "FACEBOOK",
+                    "view_count": view_count,
+                    "like_count": like_count,
+                    "comment_count": comment_count,
+                    "share_count": share_count,
+                    "line_name": line_name,
+                    "line_label": LINE_DISPLAY_NAMES.get(line_name) or "待识别线路",
+                    "clip_method": _line_clip_method(line_name),
+                    "copy_text": copy_text or _text(item.get("text")) or "-",
+                }
+            )
+
+        positive_items = [item for item in items if _safe_int(item.get("view_count")) > 0]
+        positive_items.sort(
+            key=lambda item: (
+                -_safe_int(item.get("view_count")),
+                -(_safe_int(item.get("like_count")) + _safe_int(item.get("comment_count")) + _safe_int(item.get("share_count"))),
+                _text(item.get("published_at")),
+            )
+        )
+        if not positive_items:
+            if total_count > 0:
+                return {
+                    "available": True,
+                    "day_key": day_key,
+                    "items": [],
+                    "note": f"今天已回收到 {total_count} 条发布分析记录，但当前播放汇总还是 0，先不展示 Top 5。",
+                }
+            return {
+                "available": True,
+                "day_key": day_key,
+                "items": [],
+                "note": "今天还没有拉到可用的播放回收记录。",
+            }
         return {
-            "available": False,
-            "day_key": today_key,
-            "items": [],
-            "note": "当前这份本地归档里没有播放回收明细，先保留板块结构。",
+            "available": True,
+            "day_key": day_key,
+            "items": positive_items[:5],
+            "note": f"今天共回收 {total_count or len(items)} 条记录，总播放 {total_view}。",
         }
 
     def get_weekly_effect(self, *, days: int = 7, force: bool = False) -> dict[str, Any]:
@@ -852,8 +1192,149 @@ class TestPoolDashboardService:
         }
 
     def get_trend_analyzer(self, *, refresh: bool = False) -> dict[str, Any]:
+        if refresh:
+            self._remote_cache.pop("analysis-report-rows", None)
+        rows = self._load_analysis_report_rows()
+        if not rows:
+            return {
+                "available": False,
+                "note": "当前还没有可解析的分析日报文件。",
+            }
+
+        latest = rows[0]
+        previous = rows[1] if len(rows) > 1 else None
+        baseline_rows = [
+            row for row in rows
+            if TREND_BASELINE_START <= _text(row.get("report_day")) <= TREND_BASELINE_END
+        ]
+        if not baseline_rows:
+            baseline_rows = list(rows)
+
+        def avg(metric: str, bucket_rows: list[dict[str, Any]]) -> float:
+            if not bucket_rows:
+                return 0.0
+            return sum(_safe_float(row.get(metric)) for row in bucket_rows) / len(bucket_rows)
+
+        latest_day = _text(latest.get("report_day"))
+        previous_day = _text(previous.get("report_day")) if previous else ""
+
+        def compare_card(label: str, metric: str, kind: str = "integer") -> dict[str, Any]:
+            current_value = _safe_float(latest.get(metric))
+            previous_value = _safe_float(previous.get(metric)) if previous else 0.0
+            delta = current_value - previous_value if previous else None
+            delta_pct = None
+            if previous and previous_value:
+                delta_pct = (delta / previous_value) * 100
+            note = f"前一天 {previous_day}: {previous_value:.2f}" if previous else "暂无前一天样本"
+            return self._trend_metric_card(
+                label=f"单日{label}对比",
+                value=current_value,
+                kind=kind,
+                note=note,
+                delta=delta,
+                delta_pct=delta_pct,
+            )
+
+        baseline_cards = [
+            self._trend_metric_card(
+                label="全体每日播放平均",
+                value=avg("view_total", baseline_rows),
+                kind="integer",
+                note=f"基线 {TREND_BASELINE_START} 至 {TREND_BASELINE_END} · 样本 {len(baseline_rows)} 天",
+            ),
+            self._trend_metric_card(
+                label="全体每日互动平均",
+                value=avg("interaction_total", baseline_rows),
+                kind="integer",
+                note="点赞 + 评论 + 分享",
+            ),
+            self._trend_metric_card(
+                label="全体每日发布平均",
+                value=avg("publish_count", baseline_rows),
+                kind="integer",
+                note="分析日报总体概览口径",
+            ),
+            self._trend_metric_card(
+                label="全体每日成功平均",
+                value=avg("success_count", baseline_rows),
+                kind="integer",
+                note="当日发布成功数",
+            ),
+            self._trend_metric_card(
+                label="全体每日点击平均",
+                value=avg("click_total", baseline_rows),
+                kind="integer",
+                note="推广链接点击次数",
+            ),
+            self._trend_metric_card(
+                label="全体每日成功率均值",
+                value=avg("success_rate", baseline_rows),
+                kind="percent",
+                note="成功数 / 发布数",
+            ),
+        ]
+        compare_cards = [
+            compare_card("播放", "view_total"),
+            compare_card("互动", "interaction_total"),
+            compare_card("发布", "publish_count"),
+            compare_card("成功", "success_count"),
+            compare_card("点击", "click_total"),
+            compare_card("成功率", "success_rate", "percent"),
+        ]
+        running_average_cards = [
+            self._trend_metric_card(
+                label="5月19号到最新一天平均播放",
+                value=avg("view_total", rows),
+                kind="integer",
+                note=f"{_text(rows[-1].get('report_day'))} 至 {latest_day} · 样本 {len(rows)} 天",
+            ),
+            self._trend_metric_card(
+                label="5月19号到最新一天平均互动",
+                value=avg("interaction_total", rows),
+                kind="integer",
+                note="点赞 + 评论 + 分享",
+            ),
+            self._trend_metric_card(
+                label="5月19号到最新一天平均发布",
+                value=avg("publish_count", rows),
+                kind="integer",
+                note="总体概览日报口径",
+            ),
+            self._trend_metric_card(
+                label="5月19号到最新一天平均点击",
+                value=avg("click_total", rows),
+                kind="integer",
+                note="推广链接点击次数",
+            ),
+        ]
+        daily_rows = [
+            {
+                "day": _text(row.get("report_day")),
+                "publish_count": _safe_int(row.get("publish_count")),
+                "success_count": _safe_int(row.get("success_count")),
+                "failed_count": _safe_int(row.get("failed_count")),
+                "view_total": _safe_int(row.get("view_total")),
+                "click_total": _safe_int(row.get("click_total")),
+                "interaction_total": _safe_int(row.get("interaction_total")),
+                "success_rate": round(_safe_float(row.get("success_rate")), 2),
+            }
+            for row in rows[:12]
+        ]
         return {
-            "available": False,
+            "available": True,
+            "source": "analysis_daily_markdown",
+            "baseline_start": TREND_BASELINE_START,
+            "baseline_end": TREND_BASELINE_END,
+            "baseline_days": len(baseline_rows),
+            "latest_day": latest_day,
+            "latest_generated_at": _text(latest.get("generated_at")),
+            "latest_summary": (_text(latest.get("summary_lines")[0]) if latest.get("summary_lines") else ""),
+            "latest_file_name": _text(latest.get("file_name")),
+            "latest_note": f"最新日报生成于 {latest.get('generated_at') or '-'}，统计的是 {latest_day} 的数据",
+            "baseline_cards": baseline_cards,
+            "compare_cards": compare_cards,
+            "running_average_cards": running_average_cards,
+            "daily_rows": daily_rows,
         }
 
     def get_overview(self, *, days: int = 30, include_today_top_play: bool = True) -> dict[str, Any]:

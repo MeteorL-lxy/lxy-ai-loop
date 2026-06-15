@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,7 @@ CREATIVE_LIST_ROTATION_APPS = [
     "touchshort",
     "kalos",
 ]
+REALTIME_RANK_LINES = {"realtime", "realtime_day", "realtime_single"}
 
 
 def _priority_boost_env(name: str, default: float) -> float:
@@ -111,32 +113,46 @@ def fetch_realtime_rank_candidates(
 ) -> list[dict[str, Any]]:
     if search.strip() or not config.realtime_rank_enabled:
         return []
+    target_publish_platforms = target_publish_platforms or []
     if _hourly_realtime_cache_enabled():
-        cached = _load_realtime_hour_cache(target_publish_platforms=target_publish_platforms or [])
-        if cached is not None:
-            return cached[: max(0, int(target_size or 0)) or len(cached)]
+        cached_payload = _load_realtime_candidate_hour_cache(target_publish_platforms=target_publish_platforms)
+        if cached_payload is not None:
+            if bool(cached_payload.get("exhausted")):
+                return []
+            cached = cached_payload.get("candidates")
+            if isinstance(cached, list):
+                return cached[: max(0, int(target_size or 0)) or len(cached)]
     try:
-        candidates = _fetch_realtime_rank_candidates(
+        records = _load_or_fetch_realtime_hour_records(
             config,
-            target_publish_platforms=target_publish_platforms or [],
+            target_publish_platforms=target_publish_platforms,
+        )
+        candidates = _build_realtime_candidates_from_records(
+            config,
+            records=records,
+            target_publish_platforms=target_publish_platforms,
             target_size=target_size,
         )
         if _hourly_realtime_cache_enabled():
-            _save_realtime_hour_cache(
-                target_publish_platforms=target_publish_platforms or [],
+            _save_realtime_candidate_hour_cache(
+                target_publish_platforms=target_publish_platforms,
                 candidates=candidates,
+                source_record_count=len(records),
             )
         return candidates
     except Exception:
         return []
 
 
-def _fetch_realtime_rank_candidates(
+def _load_or_fetch_realtime_hour_records(
     config,
     *,
     target_publish_platforms: list[str],
-    target_size: int,
 ) -> list[dict[str, Any]]:
+    if _hourly_realtime_cache_enabled():
+        cached_records = _load_realtime_raw_hour_cache(target_publish_platforms=target_publish_platforms)
+        if cached_records is not None:
+            return cached_records
     request_payload = _build_realtime_request_payload(target_publish_platforms)
     response = _zing_post(
         "/api/zing/playlet/realtime-list",
@@ -144,6 +160,21 @@ def _fetch_realtime_rank_candidates(
         timeout=config.realtime_rank_timeout_seconds,
     )
     records = _extract_realtime_records(response)
+    if _hourly_realtime_cache_enabled():
+        _save_realtime_raw_hour_cache(
+            target_publish_platforms=target_publish_platforms,
+            records=records,
+        )
+    return records
+
+
+def _build_realtime_candidates_from_records(
+    config,
+    *,
+    records: list[dict[str, Any]],
+    target_publish_platforms: list[str],
+    target_size: int,
+) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     seen_keys: set[tuple[str, str]] = set()
     external_lookup_failures = 0
@@ -318,9 +349,13 @@ def _extract_realtime_records(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _hourly_realtime_cache_enabled() -> bool:
-    line_name = str(os.getenv("BARRY_LOOP_LINE_NAME") or "").strip().lower()
+    line_name = _current_realtime_line_name()
     material_only = str(os.getenv("BARRY_LOOP_REALTIME_MATERIAL_ONLY") or "0").strip().lower()
-    return line_name == "realtime" and material_only in {"1", "true", "yes", "on"}
+    return line_name in REALTIME_RANK_LINES and material_only in {"1", "true", "yes", "on"}
+
+
+def _current_realtime_line_name() -> str:
+    return str(os.getenv("BARRY_LOOP_LINE_NAME") or "").strip().lower()
 
 
 def _realtime_cache_hour_token() -> str:
@@ -334,37 +369,113 @@ def _realtime_cache_platform_key(target_publish_platforms: list[str]) -> str:
     return "_".join(sorted(dict.fromkeys(values)))
 
 
-def _realtime_cache_path(*, target_publish_platforms: list[str]) -> Path:
+def _realtime_raw_cache_path(*, target_publish_platforms: list[str]) -> Path:
     hour = _realtime_cache_hour_token()
     platform_key = _realtime_cache_platform_key(target_publish_platforms)
-    return REALTIME_CACHE_DIR / f"realtime_material_{platform_key}_{hour}.json"
+    return REALTIME_CACHE_DIR / f"realtime_raw_{platform_key}_{hour}.json"
 
 
-def _load_realtime_hour_cache(*, target_publish_platforms: list[str]) -> list[dict[str, Any]] | None:
-    path = _realtime_cache_path(target_publish_platforms=target_publish_platforms)
+def _realtime_candidate_cache_path(*, target_publish_platforms: list[str]) -> Path:
+    hour = _realtime_cache_hour_token()
+    platform_key = _realtime_cache_platform_key(target_publish_platforms)
+    line_name = _current_realtime_line_name() or "realtime"
+    return REALTIME_CACHE_DIR / line_name / f"realtime_material_{platform_key}_{hour}.json"
+
+
+def _load_realtime_raw_hour_cache(*, target_publish_platforms: list[str]) -> list[dict[str, Any]] | None:
+    path = _realtime_raw_cache_path(target_publish_platforms=target_publish_platforms)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
     if str(payload.get("fetched_hour") or "") != _realtime_cache_hour_token():
         return None
-    rows = payload.get("candidates")
+    rows = payload.get("records")
     if not isinstance(rows, list):
         return None
     return [dict(item) for item in rows if isinstance(item, dict)]
 
 
-def _save_realtime_hour_cache(*, target_publish_platforms: list[str], candidates: list[dict[str, Any]]) -> None:
-    path = _realtime_cache_path(target_publish_platforms=target_publish_platforms)
+def _save_realtime_raw_hour_cache(*, target_publish_platforms: list[str], records: list[dict[str, Any]]) -> None:
+    path = _realtime_raw_cache_path(target_publish_platforms=target_publish_platforms)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "fetched_hour": _realtime_cache_hour_token(),
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "platforms": [str(value or "").strip().upper() for value in target_publish_platforms if str(value or "").strip()],
+        "record_count": len(records),
+        "records": records,
+    }
+    _atomic_write_json(path, payload)
+
+
+def _load_realtime_candidate_hour_cache(*, target_publish_platforms: list[str]) -> dict[str, Any] | None:
+    path = _realtime_candidate_cache_path(target_publish_platforms=target_publish_platforms)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if str(payload.get("fetched_hour") or "") != _realtime_cache_hour_token():
+        return None
+    candidates = payload.get("candidates")
+    if candidates is not None and not isinstance(candidates, list):
+        return None
+    return payload
+
+
+def _save_realtime_candidate_hour_cache(
+    *,
+    target_publish_platforms: list[str],
+    candidates: list[dict[str, Any]],
+    source_record_count: int,
+    exhausted: bool = False,
+    exhausted_reason: str = "",
+) -> None:
+    path = _realtime_candidate_cache_path(target_publish_platforms=target_publish_platforms)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "fetched_hour": _realtime_cache_hour_token(),
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "line_name": _current_realtime_line_name() or "realtime",
+        "platforms": [str(value or "").strip().upper() for value in target_publish_platforms if str(value or "").strip()],
+        "source_record_count": max(0, int(source_record_count or 0)),
         "candidate_count": len(candidates),
         "candidates": candidates,
+        "exhausted": bool(exhausted),
+        "exhausted_reason": str(exhausted_reason or "").strip(),
+        "exhausted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S") if exhausted else "",
     }
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _atomic_write_json(path, payload)
+
+
+def mark_realtime_hour_exhausted(reason: str, *, target_publish_platforms: list[str] | None = None) -> None:
+    if not _hourly_realtime_cache_enabled():
+        return
+    platforms = target_publish_platforms or []
+    path = _realtime_candidate_cache_path(target_publish_platforms=platforms)
+    payload = _load_realtime_candidate_hour_cache(target_publish_platforms=platforms) or {
+        "fetched_hour": _realtime_cache_hour_token(),
+        "updated_at": "",
+        "line_name": _current_realtime_line_name() or "realtime",
+        "platforms": [str(value or "").strip().upper() for value in platforms if str(value or "").strip()],
+        "source_record_count": 0,
+        "candidate_count": 0,
+        "candidates": [],
+    }
+    payload["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    payload["exhausted"] = True
+    payload["exhausted_reason"] = str(reason or "").strip()
+    payload["exhausted_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_json(path, payload)
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+        temp_path = Path(handle.name)
+    temp_path.replace(path)
 
 
 def _normalize_timestamp(value: Any) -> str:
