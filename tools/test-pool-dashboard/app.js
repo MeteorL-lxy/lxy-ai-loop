@@ -550,6 +550,9 @@ function renderHistory(overview) {
     const runningAverageTitle = payload.latest_day
       ? `从 2026-06-09 到 ${payload.latest_day} 的均值`
       : "从 2026-06-09 到前一天的均值";
+    const dailyTimelineTitle = payload.latest_day
+      ? `2026-05-19 到 ${payload.latest_day} 的每日全体汇总`
+      : "2026-05-19 到前一天的每日全体汇总";
 
     node.innerHTML = `
       <div class="history-summary">
@@ -583,7 +586,7 @@ function renderHistory(overview) {
       </section>
 
       <section class="history-section">
-        <h3>最近日报时间线</h3>
+        <h3>${esc(dailyTimelineTitle)}</h3>
         <div class="table-wrap table-wrap-five-rows">
           <table class="data-table compact">
             <thead>

@@ -856,7 +856,7 @@ class TestPoolDashboardService:
                 note="推广链接点击次数",
             ),
         ]
-        daily_rows = rows[:12]
+        daily_rows = list(rows)
         return {
             "available": True,
             "source": "ai_loop_reporting_p0_summary",
@@ -1878,7 +1878,7 @@ class TestPoolDashboardService:
                 "interaction_total": _safe_int(row.get("interaction_total")),
                 "success_rate": round(_safe_float(row.get("success_rate")), 2),
             }
-            for row in rows[:12]
+            for row in rows
         ]
         return {
             "available": True,
