@@ -79,6 +79,7 @@ APP_LABELS = {
     "snackshort": "SnackShort",
     "touchshort": "TouchShort",
     "flickreels": "FlickReels",
+    "stardusttv": "StardustTV",
     "sereal": "Sereal+",
     "moboreels": "MoboReels",
 }

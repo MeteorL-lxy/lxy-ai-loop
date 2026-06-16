@@ -197,6 +197,7 @@ PLATFORMS = {
     "kalos": "KalosTV",
     "snackshort": "SnackShort",
     "touchshort": "TouchShort",
+    "stardusttv": "StardustTV",
     "dreameshort": "DreameShort",
     "honeyreels": "HoneyReels",
     "pancake": "Pancake",

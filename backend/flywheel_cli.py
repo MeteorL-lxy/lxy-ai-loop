@@ -100,7 +100,7 @@ from flywheel.clipping.ai_cut_animation import (
 
 RUNNING_PUBLISH_STATUSES = {"WAITING", "PENDING", "PROCESSING", "QUEUED", "SUBMITTED", "SCHEDULED"}
 SUCCESSFUL_PUBLISH_STATUSES = {"POSTED", "SUCCESS", "DONE"}
-CLIP_SUPPORTED_DRAMA_PLATFORMS = ["kalos", "snackshort", "goodshort", "moboreels", "touchshort", "flickreels"]
+CLIP_SUPPORTED_DRAMA_PLATFORMS = ["kalos", "snackshort", "goodshort", "moboreels", "touchshort", "flickreels", "stardusttv"]
 CLIP_SUPPORTED_DRAMA_PLATFORM_ALIASES = {
     "kalostv": "kalos",
     "kalos": "kalos",
@@ -109,6 +109,7 @@ CLIP_SUPPORTED_DRAMA_PLATFORM_ALIASES = {
     "moboreels": "moboreels",
     "touchshort": "touchshort",
     "flickreels": "flickreels",
+    "stardusttv": "stardusttv",
 }
 CUT_TYPE_ZH = {
     "high_cut": "高燃卡点",

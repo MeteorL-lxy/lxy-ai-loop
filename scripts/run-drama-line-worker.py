@@ -22,6 +22,9 @@ VIDEO_ISSUE_FAILURE_PATTERNS = (
     "分辨率不符合要求",
     "发布成片分辨率过低",
     "视频文件上传失败",
+    "帖子发布失败",
+    "post publish failed",
+    "post publishing failed",
     "视频格式",
     "仅支持 mp4",
     "仅支持mp4",
@@ -678,6 +681,9 @@ def main() -> int:
             platform,
             "--json",
         ])
+        publish_retries_override = str(os.getenv("BARRY_LOOP_PUBLISH_RETRIES_OVERRIDE") or "").strip()
+        if publish_retries_override:
+            cmd.extend(["--publish-retries", publish_retries_override])
         if allow_reuse:
             cmd.append("--allow-account-reuse")
         for account_id in account_ids:

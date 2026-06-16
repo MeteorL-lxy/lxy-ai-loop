@@ -86,6 +86,7 @@ CREATIVE_LIST_ROTATION_APPS = [
     "kalos",
 ]
 REALTIME_RANK_LINES = {"realtime", "realtime_day", "realtime_single"}
+GUANGDADA_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 def _priority_boost_env(name: str, default: float) -> float:
@@ -321,9 +322,40 @@ def _zing_headers() -> dict[str, str]:
     return headers
 
 
+def _is_retryable_guangdada_error(exc: requests.RequestException) -> bool:
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if status_code in GUANGDADA_RETRYABLE_STATUS_CODES:
+        return True
+    if isinstance(exc, (requests.Timeout, requests.ConnectionError)):
+        return True
+    text = str(exc or "").lower()
+    return any(
+        token in text
+        for token in (
+            "502",
+            "503",
+            "504",
+            "timeout",
+            "timed out",
+            "connection aborted",
+            "bad gateway",
+        )
+    )
+
+
+def _guangdada_retry_attempts() -> int:
+    return max(1, int(os.getenv("BARRY_GUANGDADA_RETRY_ATTEMPTS") or 4))
+
+
+def _guangdada_retry_sleep_seconds(attempt: int) -> float:
+    base = float(os.getenv("BARRY_GUANGDADA_RETRY_SLEEP_SECONDS") or 1.5)
+    return min(6.0, max(0.5, base) * max(1.0, float(attempt)))
+
+
 def _zing_post(path: str, payload: dict[str, Any], *, timeout: float) -> dict[str, Any]:
     request_timeout = max(15.0, float(timeout))
-    max_attempts = max(1, int(os.getenv("BARRY_GUANGDADA_RETRY_ATTEMPTS") or 2))
+    max_attempts = _guangdada_retry_attempts()
     last_exc: Exception | None = None
     for attempt in range(1, max_attempts + 1):
         try:
@@ -337,12 +369,12 @@ def _zing_post(path: str, payload: dict[str, Any], *, timeout: float) -> dict[st
             break
         except requests.RequestException as exc:
             last_exc = exc
-            if attempt >= max_attempts:
+            if attempt >= max_attempts or not _is_retryable_guangdada_error(exc):
                 raise RuntimeError(f"实时剧目榜请求失败: {exc}") from exc
             _log_realtime_skip(
                 f"广大大接口请求重试 {attempt}/{max_attempts - 1}：{path}，原因={exc}"
             )
-            time.sleep(min(5.0, float(attempt)))
+            time.sleep(_guangdada_retry_sleep_seconds(attempt))
     else:
         raise RuntimeError(f"实时剧目榜请求失败: {last_exc}")
     try:
@@ -395,6 +427,59 @@ def _realtime_candidate_cache_path(*, target_publish_platforms: list[str]) -> Pa
     platform_key = _realtime_cache_platform_key(target_publish_platforms)
     line_name = _current_realtime_line_name() or "realtime"
     return REALTIME_CACHE_DIR / line_name / f"realtime_material_{platform_key}_{hour}.json"
+
+
+def _lookup_cache_key(prefix: str, identity: str) -> str:
+    digest = hashlib.sha1(str(identity or "").encode("utf-8")).hexdigest()[:16]
+    normalized_prefix = str(prefix or "lookup").strip() or "lookup"
+    return f"{normalized_prefix}_{digest}.json"
+
+
+def _lookup_cache_path(cache_root: Path, *, prefix: str, identity: str) -> Path:
+    return cache_root / "lookup-cache" / _lookup_cache_key(prefix, identity)
+
+
+def _load_lookup_cache(
+    cache_root: Path,
+    *,
+    prefix: str,
+    identity: str,
+) -> list[dict[str, Any]] | None:
+    path = _lookup_cache_path(cache_root, prefix=prefix, identity=identity)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    expires_at = str(payload.get("expires_at") or "").strip()
+    if expires_at:
+        try:
+            if datetime.now(timezone.utc) >= datetime.fromisoformat(expires_at):
+                return None
+        except ValueError:
+            return None
+    assets = payload.get("assets")
+    if not isinstance(assets, list):
+        return None
+    return [dict(item) for item in assets if isinstance(item, dict)]
+
+
+def _save_lookup_cache(
+    cache_root: Path,
+    *,
+    prefix: str,
+    identity: str,
+    assets: list[dict[str, Any]],
+    ttl_seconds: int,
+) -> None:
+    ttl = max(30, int(ttl_seconds or 0))
+    path = _lookup_cache_path(cache_root, prefix=prefix, identity=identity)
+    payload = {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=ttl)).isoformat(),
+        "asset_count": len(assets),
+        "assets": assets,
+    }
+    _atomic_write_json(path, payload)
 
 
 def _load_realtime_raw_hour_cache(*, target_publish_platforms: list[str]) -> list[dict[str, Any]] | None:
@@ -651,6 +736,13 @@ def _build_external_asset_key(*, name_md5: str, creative_ad_key: str, resource_i
 def _fetch_external_video_assets(name_md5: str, *, timeout: float) -> list[dict[str, Any]]:
     if not name_md5:
         return []
+    cached_assets = _load_lookup_cache(
+        REALTIME_CACHE_DIR,
+        prefix="external-assets",
+        identity=name_md5,
+    )
+    if cached_assets is not None:
+        return cached_assets
     payload = {
         "app_type": 2,
         "page": 1,
@@ -691,6 +783,13 @@ def _fetch_external_video_assets(name_md5: str, *, timeout: float) -> list[dict[
                     ),
                 }
             )
+    _save_lookup_cache(
+        REALTIME_CACHE_DIR,
+        prefix="external-assets",
+        identity=name_md5,
+        assets=assets,
+        ttl_seconds=3600 if assets else 600,
+    )
     return assets
 
 
@@ -1129,7 +1228,7 @@ def _fetch_creative_list_candidates_for_app(
         except Exception as exc:
             return serial_id, title, [], str(exc)
 
-    max_workers = max(1, min(int(os.getenv("BARRY_CREATIVE_LIST_LOOKUP_CONCURRENCY") or 8), 24))
+    max_workers = max(1, min(int(os.getenv("BARRY_CREATIVE_LIST_LOOKUP_CONCURRENCY") or 4), 24))
     touched_serial_ids = [
         str(row.get("serial_id") or "").strip()
         for row in pending_rows
@@ -1229,6 +1328,15 @@ def _fetch_creative_list_official_rows_window(app_id: str, *, limit: int, page_s
 
 
 def _search_creative_list_assets(title: str, *, publish_platform: str, timeout: float) -> list[dict[str, Any]]:
+    normalized_title = str(title or "").strip()
+    normalized_platform = str(publish_platform or "FACEBOOK").strip().lower()
+    cached_assets = _load_lookup_cache(
+        CREATIVE_LIST_CACHE_DIR,
+        prefix=f"creative-list-{normalized_platform}",
+        identity=normalized_title,
+    )
+    if cached_assets is not None:
+        return cached_assets
     now = datetime.now(timezone.utc)
     seen_begin = int((now - timedelta(days=365)).timestamp())
     seen_end = int(now.timestamp())
@@ -1238,8 +1346,8 @@ def _search_creative_list_assets(title: str, *, publish_platform: str, timeout: 
         "page_size": 20,
         "duplicate_removal": 1,
         "is_theater": 1,
-        "platform": [str(publish_platform or "FACEBOOK").strip().lower()],
-        "keyword": [str(title).strip()],
+        "platform": [normalized_platform],
+        "keyword": [normalized_title],
         "seen_begin": seen_begin,
         "seen_end": seen_end,
         "sort_field": "-impression",
@@ -1275,6 +1383,13 @@ def _search_creative_list_assets(title: str, *, publish_platform: str, timeout: 
                     ),
                 }
             )
+    _save_lookup_cache(
+        CREATIVE_LIST_CACHE_DIR,
+        prefix=f"creative-list-{normalized_platform}",
+        identity=normalized_title,
+        assets=assets,
+        ttl_seconds=3600 if assets else 900,
+    )
     return assets
 
 

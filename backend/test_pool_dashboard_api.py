@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -136,6 +137,7 @@ PROCESSING_TOKENS = (
     "uploaded",
     "clipping",
 )
+HEARTBEAT_RE = re.compile(r"^\[heartbeat\]\s+(?P<stage>.+)$")
 
 
 @dataclass
@@ -485,6 +487,162 @@ def _report_path(runtime_mode: str, day_key: str, line_name: str, round_name: st
         return None
     candidates = sorted(base.glob("*.md"))
     return candidates[0] if candidates else None
+
+
+def _tail_lines(path: Path, limit: int = 300) -> list[str]:
+    if not path.exists():
+        return []
+    queue: deque[str] = deque(maxlen=limit)
+    with path.open("r", encoding="utf-8", errors="ignore") as handle:
+        for line in handle:
+            queue.append(line.rstrip("\n"))
+    return list(queue)
+
+
+def _line_round_start_re(line_name: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"^\[(?P<ts>[^\]]+)\]\s+(?P<label>{re.escape(line_name)}-round(?P<round>\d+))\s+开始：(?P<details>.*)$"
+    )
+
+
+def _line_round_done_re(line_name: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"^\[(?P<ts>[^\]]+)\]\s+(?P<label>{re.escape(line_name)}-round(?P<round>\d+))\s+完成：成功\s+(?P<success>\d+)，失败\s+(?P<failed>\d+)，处理中\s+(?P<processing>\d+)，未提交\s+(?P<unsubmitted>\d+)。$"
+    )
+
+
+def _line_worker_exit_re(line_name: str) -> re.Pattern[str]:
+    return re.compile(rf"^\[(?P<ts>[^\]]+)\]\s+line={re.escape(line_name)}\s+exited code=(?P<code>-?\d+);")
+
+
+def _line_account_empty_re(line_name: str) -> re.Pattern[str]:
+    return re.compile(rf"^\[(?P<ts>[^\]]+)\]\s+{re.escape(line_name)}\s+选账号失败：账号池\s+(?P<pool>\S+)\s+没有可用账号；")
+
+
+def _line_target_stop_re(line_name: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"^\[(?P<ts>[^\]]+)\]\s+{re.escape(line_name)}\s+已达成账号目标并停止：账号池=(?P<pool>\S+)，账号日目标=(?P<target>\d+)，可用账号已全部达标。"
+    )
+
+
+def _line_waiting_realtime_re(line_name: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"^\[(?P<ts>[^\]]+)\]\s+{re.escape(line_name)}\s+等待上游\s+realtime：账号池=(?P<pool>\S+)，未达标账号=(?P<accounts>\d+)，剩余缺口=(?P<gap>\d+)；300s 后重试。"
+    )
+
+
+def _parse_live_line_runtime(line_name: str, *, day_key: str) -> dict[str, Any]:
+    forever_log = CONTINUOUS_ROOT / f"forever_{line_name}.log"
+    worker_log = CONTINUOUS_ROOT / day_key / line_name / "worker.log"
+    forever_lines = _tail_lines(forever_log)
+    worker_lines = _tail_lines(worker_log)
+
+    start_re = _line_round_start_re(line_name)
+    done_re = _line_round_done_re(line_name)
+    exit_re = _line_worker_exit_re(line_name)
+    empty_re = _line_account_empty_re(line_name)
+    target_stop_re = _line_target_stop_re(line_name)
+    waiting_realtime_re = _line_waiting_realtime_re(line_name)
+
+    latest_start: tuple[str, str] | None = None
+    latest_done: tuple[str, str] | None = None
+    latest_exit: tuple[str, str] | None = None
+    latest_empty: tuple[str, str] | None = None
+    latest_target_stop: tuple[str, str] | None = None
+    latest_waiting: tuple[str, str] | None = None
+
+    for raw_line in forever_lines:
+        match = start_re.match(raw_line)
+        if match:
+            latest_start = (match.group("ts"), match.group("label"))
+            continue
+        match = done_re.match(raw_line)
+        if match:
+            latest_done = (match.group("ts"), match.group("label"))
+            continue
+        match = exit_re.match(raw_line)
+        if match:
+            latest_exit = (match.group("ts"), match.group("code"))
+            continue
+        match = empty_re.match(raw_line)
+        if match:
+            latest_empty = (match.group("ts"), match.group("pool"))
+            continue
+        match = target_stop_re.match(raw_line)
+        if match:
+            latest_target_stop = (match.group("ts"), match.group("pool"))
+            continue
+        match = waiting_realtime_re.match(raw_line)
+        if match:
+            latest_waiting = (match.group("ts"), match.group("gap"))
+            continue
+
+    latest_heartbeat_stage = ""
+    latest_heartbeat_at = ""
+    if worker_log.exists():
+        for raw_line in reversed(worker_lines):
+            match = HEARTBEAT_RE.match(raw_line)
+            if match:
+                latest_heartbeat_stage = match.group("stage")
+                latest_heartbeat_at = datetime.fromtimestamp(worker_log.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                break
+
+    is_active_round = False
+    active_round_name = ""
+    active_since = ""
+    if latest_start:
+        active_since, active_round_name = latest_start
+        is_active_round = True
+        if latest_done and latest_done[1] == active_round_name and latest_done[0] >= active_since:
+            is_active_round = False
+        if latest_exit and latest_exit[0] >= active_since:
+            is_active_round = False
+        if latest_target_stop and latest_target_stop[0] >= active_since:
+            is_active_round = False
+
+    if is_active_round:
+        return {
+            "is_running": True,
+            "runtime_state": "运行中",
+            "last_update": latest_heartbeat_at or active_since,
+            "latest_round": active_round_name,
+            "live_stage": latest_heartbeat_stage or "执行中",
+        }
+
+    if latest_target_stop:
+        return {
+            "is_running": False,
+            "runtime_state": "已完成",
+            "last_update": latest_target_stop[0],
+            "latest_round": active_round_name,
+            "live_stage": "",
+        }
+
+    if latest_waiting:
+        return {
+            "is_running": False,
+            "runtime_state": "等待上游",
+            "last_update": latest_waiting[0],
+            "latest_round": active_round_name,
+            "live_stage": "",
+        }
+
+    if latest_empty:
+        return {
+            "is_running": False,
+            "runtime_state": "空闲",
+            "last_update": latest_empty[0],
+            "latest_round": active_round_name,
+            "live_stage": "",
+        }
+
+    return {
+        "is_running": False,
+        "runtime_state": "",
+        "last_update": "",
+        "latest_round": active_round_name,
+        "live_stage": latest_heartbeat_stage,
+    }
 
 
 class TestPoolDashboardService:
@@ -980,7 +1138,14 @@ class TestPoolDashboardService:
         self._set_cached_remote(cache_key, 600, {"rows": rows, "total_count": total_count or len(rows)})
         return rows
 
-    def _aggregate_my_task_metrics(self, rows: list[dict[str, Any]], *, day_key: str = "") -> dict[str, Any]:
+    def _aggregate_my_task_metrics(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        day_key: str = "",
+        start_day: str = "",
+        end_day: str = "",
+    ) -> dict[str, Any]:
         click_total = 0
         share_total = 0.0
         ad_total = 0.0
@@ -988,6 +1153,10 @@ class TestPoolDashboardService:
         for row in rows:
             active_day = _text(row.get("actived_at"))[:10]
             if day_key and active_day != day_key:
+                continue
+            if start_day and active_day and active_day < start_day:
+                continue
+            if end_day and active_day and active_day > end_day:
                 continue
             platform_rows = row.get("platform_list") if isinstance(row.get("platform_list"), list) else []
             facebook_row = next(
@@ -997,7 +1166,9 @@ class TestPoolDashboardService:
                 ),
                 {},
             )
-            platform_click = _safe_int(facebook_row.get("click_count"))
+            # 点击口径按 /agent/v1/task/my_task 返回的当天任务 click_count 汇总，
+            # 不再使用 platform_list 内部的 Facebook 子字段，避免看板值偏小。
+            platform_click = _safe_int(row.get("click_count"))
             platform_share = round(_safe_float(facebook_row.get("share_amount")), 2)
             platform_ad = round(_safe_float(facebook_row.get("ad_amount")), 2)
             click_total += platform_click
@@ -1074,6 +1245,11 @@ class TestPoolDashboardService:
         try:
             my_task_rows = self._fetch_all_my_task_rows(task_type="1")
             metrics["overall_my_task"] = self._aggregate_my_task_metrics(my_task_rows)
+            metrics["overall_my_task_window"] = self._aggregate_my_task_metrics(
+                my_task_rows,
+                start_day=TREND_BASELINE_START,
+                end_day=today_key,
+            )
             metrics["today_my_task"] = self._aggregate_my_task_metrics(my_task_rows, day_key=today_key)
         except Exception:
             pass
@@ -1261,6 +1437,7 @@ class TestPoolDashboardService:
         today_records = external.get("today_records") if isinstance(external.get("today_records"), dict) else {}
         today_publish = external.get("today_publish") if isinstance(external.get("today_publish"), dict) else {}
         overall_my_task = external.get("overall_my_task") if isinstance(external.get("overall_my_task"), dict) else {}
+        overall_my_task_window = external.get("overall_my_task_window") if isinstance(external.get("overall_my_task_window"), dict) else {}
         today_my_task = external.get("today_my_task") if isinstance(external.get("today_my_task"), dict) else {}
         requested_today_real = _safe_int(today_records.get("requested_count"), requested_today)
         success_today_real = _safe_int(today_publish.get("success_count"), _safe_int(today_records.get("success_count"), success_today))
@@ -1274,8 +1451,8 @@ class TestPoolDashboardService:
             "reserve_accounts": reserve_accounts,
             "total_line_count": len([key for key in LINE_POOL_KEYS if key != "novel"]),
             "overall_view_total": _safe_int(overall_publish.get("view_total")),
-            "overall_click_total": _safe_int(overall_my_task.get("click_total")),
-            "overall_click_task_count": _safe_int(overall_my_task.get("click_task_count")),
+            "overall_click_total": _safe_int(overall_my_task_window.get("click_total"), _safe_int(overall_my_task.get("click_total"))),
+            "overall_click_task_count": _safe_int(overall_my_task_window.get("click_task_count"), _safe_int(overall_my_task.get("click_task_count"))),
             "overall_interaction_total": _safe_int(overall_publish.get("interaction_total")),
             "overall_income_total": round(_safe_float(overall_my_task.get("income_total")), 2),
             "today_requested_count": requested_today_real,
@@ -1325,6 +1502,7 @@ class TestPoolDashboardService:
         for line_name in line_names:
             latest = latest_by_line.get(line_name)
             stats = today_by_line.get(line_name, {})
+            live_runtime = _parse_live_line_runtime(line_name, day_key=today_key)
             pool_key = LINE_POOL_KEYS.get(line_name, "")
             pool_row = account_group_map.get(pool_key, {})
             pool_size = _safe_int(pool_row.get("count"))
@@ -1352,11 +1530,12 @@ class TestPoolDashboardService:
                     "unsubmitted_count": unsubmitted_count,
                     "progress_pct": progress_pct,
                     "stability_pct": stability_pct,
-                    "last_update": latest.exported_at if latest else "",
-                    "latest_round": latest.round_name if latest else "",
-                    "runtime_state": latest.status_label if latest else "未运行",
+                    "last_update": live_runtime.get("last_update") or (latest.exported_at if latest else ""),
+                    "latest_round": live_runtime.get("latest_round") or (latest.round_name if latest else ""),
+                    "runtime_state": live_runtime.get("runtime_state") or (latest.status_label if latest else "未运行"),
                     "note": latest.note if latest else "",
-                    "is_running": bool(latest and (latest.processing_count > 0 or latest.status == "processing")),
+                    "live_stage": live_runtime.get("live_stage") or "",
+                    "is_running": bool(live_runtime.get("is_running")) or bool(latest and (latest.processing_count > 0 or latest.status == "processing")),
                 }
             )
         return {
@@ -1392,14 +1571,15 @@ class TestPoolDashboardService:
                 continue
             account_id = _text(item.get("social_id"))
             line_name = account_line_map.get(account_id, "")
-            copy_text = _clean_publish_copy_text(item.get("text"))
+            raw_copy_text = _text(item.get("text"))
+            title_copy_text = _clean_publish_copy_text(raw_copy_text)
             view_count = _safe_int(item.get("views"))
             like_count = _safe_int(item.get("likes"))
             comment_count = _safe_int(item.get("comments"))
             share_count = _safe_int(item.get("shares"))
             items.append(
                 {
-                    "title": _build_top_play_title(raw_title=item.get("title"), copy_text=copy_text),
+                    "title": _build_top_play_title(raw_title=item.get("title"), copy_text=title_copy_text),
                     "published_at": _text(item.get("post_date") or item.get("created_at")),
                     "created_at": _text(item.get("created_at")),
                     "account_name": _text(item.get("social_name")) or "未知账号",
@@ -1412,7 +1592,8 @@ class TestPoolDashboardService:
                     "line_name": line_name,
                     "line_label": LINE_DISPLAY_NAMES.get(line_name) or "待识别线路",
                     "clip_method": _line_clip_method(line_name),
-                    "copy_text": copy_text or _text(item.get("text")) or "-",
+                    # 卡片正文展示真实发布文案，不再回退成二次清洗后的剧情摘要。
+                    "copy_text": raw_copy_text or "-",
                 }
             )
 
@@ -1485,13 +1666,6 @@ class TestPoolDashboardService:
 
         my_task_rows = self._fetch_all_my_task_rows(task_type="1")
         task_metrics_map: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
-        day_task_summary: dict[str, dict[str, Any]] = defaultdict(lambda: {
-            "click_total": 0,
-            "share_income_total": 0.0,
-            "ad_income_total": 0.0,
-            "income_total": 0.0,
-            "order_amount": 0.0,
-        })
         for row in my_task_rows:
             day_key = _text(row.get("actived_at"))[:10]
             if not day_key or day_key < start_day:
@@ -1520,32 +1694,62 @@ class TestPoolDashboardService:
                 _safe_float(facebook_row.get("order_amount"), _safe_float(row.get("order_amount"))),
                 2,
             )
-            day_task_summary[day_key]["click_total"] += click_total
-            day_task_summary[day_key]["share_income_total"] = round(
-                _safe_float(day_task_summary[day_key]["share_income_total"]) + share_income_total,
-                2,
-            )
-            day_task_summary[day_key]["ad_income_total"] = round(
-                _safe_float(day_task_summary[day_key]["ad_income_total"]) + ad_income_total,
-                2,
-            )
-            day_task_summary[day_key]["income_total"] = round(
-                _safe_float(day_task_summary[day_key]["income_total"]) + share_income_total,
-                2,
-            )
-            day_task_summary[day_key]["order_amount"] = round(
-                _safe_float(day_task_summary[day_key]["order_amount"]) + order_amount,
-                2,
-            )
             task_metrics_map[day_key][task_id] = {
                 "click_total": click_total,
                 "share_income_total": share_income_total,
                 "ad_income_total": ad_income_total,
                 "income_total": round(share_income_total, 2),
                 "order_amount": order_amount,
+                "drama_title": _text(row.get("title") or row.get("title_en") or row.get("title_ch")),
             }
 
         account_line_map = self._build_account_line_map()
+
+        def _sample_drama_title(item: dict[str, Any], matched_task: dict[str, Any]) -> str:
+            title = _text(matched_task.get("drama_title"))
+            if title:
+                return title
+            raw_title = _text(item.get("title"))
+            lowered = raw_title.lower()
+            if raw_title and "http" not in lowered and "click" not in lowered and "watch" not in lowered:
+                return raw_title
+            return ""
+
+        def _build_history_sample(day_key: str, item: dict[str, Any]) -> dict[str, Any]:
+            task_id = _text(item.get("task_id"))
+            matched_task = task_metrics_map.get(day_key, {}).get(task_id, {})
+            line_name = account_line_map.get(_text(item.get("social_id")), "")
+            matched_by_task = bool(matched_task)
+            return {
+                "cache_version": 3,
+                "day_key": day_key,
+                "available": True,
+                "task_id": task_id,
+                "account_name": _text(item.get("social_name")) or "未知账号",
+                "drama_title": _sample_drama_title(item, matched_task),
+                "platform": _text(item.get("social_type") or "FACEBOOK") or "FACEBOOK",
+                "line_name": line_name,
+                "line_label": LINE_DISPLAY_NAMES.get(line_name) or "待识别线路",
+                "view_count": _safe_int(item.get("views")),
+                "click_total": _safe_int(matched_task.get("click_total")),
+                "income_total": round(_safe_float(matched_task.get("income_total")), 2),
+                "share_income_total": round(_safe_float(matched_task.get("share_income_total")), 2),
+                "ad_income_total": round(_safe_float(matched_task.get("ad_income_total")), 2),
+                "order_amount": round(_safe_float(matched_task.get("order_amount")), 2),
+                "like_count": _safe_int(item.get("likes")),
+                "comment_count": _safe_int(item.get("comments")),
+                "share_count": _safe_int(item.get("shares")),
+                "interaction_total": (
+                    _safe_int(item.get("likes"))
+                    + _safe_int(item.get("comments"))
+                    + _safe_int(item.get("shares"))
+                ),
+                "published_at": _text(item.get("post_date") or item.get("created_at")),
+                "copy_text": _text(item.get("text")) or "-",
+                "matched_task": matched_by_task,
+                "metric_scope": "样本任务口径" if matched_by_task else "未匹配到样本任务",
+            }
+
         start_dt = date.fromisoformat(start_day)
         end_dt = display_end_dt
         rows: list[dict[str, Any]] = []
@@ -1560,7 +1764,7 @@ class TestPoolDashboardService:
             use_cached = (
                 not force_refresh
                 and isinstance(cached_row, dict)
-                and _safe_int(cached_row.get("cache_version")) >= 1
+                and _safe_int(cached_row.get("cache_version")) >= 3
             )
             if use_cached:
                 row_payload = dict(cached_row)
@@ -1580,71 +1784,31 @@ class TestPoolDashboardService:
                         _text(item.get("post_date") or item.get("created_at")),
                     )
                 )
-                top_item = next((item for item in items if _safe_int(item.get("views")) >= 0), None)
-                if top_item:
-                    task_id = _text(top_item.get("task_id"))
-                    matched_task = task_metrics_map.get(day_key, {}).get(task_id, {})
-                    day_summary = day_task_summary.get(day_key, {})
-                    line_name = account_line_map.get(_text(top_item.get("social_id")), "")
-                    matched_by_task = bool(matched_task)
-                    click_total = _safe_int(
-                        matched_task.get("click_total") if matched_by_task else day_summary.get("click_total")
-                    )
-                    share_income_total = round(
-                        _safe_float(
-                            matched_task.get("share_income_total") if matched_by_task else day_summary.get("share_income_total")
+                samples = [_build_history_sample(day_key, item) for item in items if isinstance(item, dict)]
+                top_sample = next((sample for sample in samples if _safe_int(sample.get("view_count")) >= 0), None)
+                if top_sample:
+                    peak_click_sample = max(
+                        samples,
+                        key=lambda sample: (
+                            _safe_int(sample.get("click_total")),
+                            _safe_int(sample.get("view_count")),
                         ),
-                        2,
                     )
-                    ad_income_total = round(
-                        _safe_float(
-                            matched_task.get("ad_income_total") if matched_by_task else day_summary.get("ad_income_total")
+                    peak_income_sample = max(
+                        samples,
+                        key=lambda sample: (
+                            _safe_float(sample.get("income_total")),
+                            _safe_int(sample.get("view_count")),
                         ),
-                        2,
-                    )
-                    income_total = round(
-                        _safe_float(
-                            matched_task.get("income_total") if matched_by_task else day_summary.get("income_total")
-                        ),
-                        2,
-                    )
-                    order_amount = round(
-                        _safe_float(
-                            matched_task.get("order_amount") if matched_by_task else day_summary.get("order_amount")
-                        ),
-                        2,
                     )
                     row_payload = {
-                        "cache_version": 1,
-                        "day_key": day_key,
-                        "available": True,
-                        "task_id": task_id,
-                        "account_name": _text(top_item.get("social_name")) or "未知账号",
-                        "platform": _text(top_item.get("social_type") or "FACEBOOK") or "FACEBOOK",
-                        "line_name": line_name,
-                        "line_label": LINE_DISPLAY_NAMES.get(line_name) or "待识别线路",
-                        "view_count": _safe_int(top_item.get("views")),
-                        "click_total": click_total,
-                        "income_total": income_total,
-                        "share_income_total": share_income_total,
-                        "ad_income_total": ad_income_total,
-                        "order_amount": order_amount,
-                        "like_count": _safe_int(top_item.get("likes")),
-                        "comment_count": _safe_int(top_item.get("comments")),
-                        "share_count": _safe_int(top_item.get("shares")),
-                        "interaction_total": (
-                            _safe_int(top_item.get("likes"))
-                            + _safe_int(top_item.get("comments"))
-                            + _safe_int(top_item.get("shares"))
-                        ),
-                        "published_at": _text(top_item.get("post_date") or top_item.get("created_at")),
-                        "copy_text": _text(top_item.get("text")) or "-",
-                        "matched_task": matched_by_task,
-                        "metric_scope": "样本任务口径" if matched_by_task else "当天任务总口径",
+                        **dict(top_sample),
+                        "peak_click_sample": dict(peak_click_sample),
+                        "peak_income_sample": dict(peak_income_sample),
                     }
                 else:
                     row_payload = {
-                        "cache_version": 1,
+                        "cache_version": 3,
                         "day_key": day_key,
                         "available": False,
                     }
@@ -1677,18 +1841,37 @@ class TestPoolDashboardService:
 
         rows.sort(key=lambda item: _text(item.get("day_key")), reverse=True)
         peak_play = max(rows, key=lambda item: _safe_int(item.get("view_count")))
-        peak_click = max(rows, key=lambda item: _safe_int(item.get("click_total")))
-        peak_income = max(rows, key=lambda item: _safe_float(item.get("income_total")))
+        peak_click = max(
+            [
+                item.get("peak_click_sample")
+                if isinstance(item.get("peak_click_sample"), dict)
+                else item
+                for item in rows
+            ],
+            key=lambda item: _safe_int(item.get("click_total")),
+        )
+        peak_income = max(
+            [
+                item.get("peak_income_sample")
+                if isinstance(item.get("peak_income_sample"), dict)
+                else item
+                for item in rows
+            ],
+            key=lambda item: _safe_float(item.get("income_total")),
+        )
 
         def build_peak_note(item: dict[str, Any], metric_name: str) -> list[str]:
-            scope = _text(item.get("metric_scope")) or "当天任务总口径"
-            source = f"{metric_name}来源：样本任务口径" if scope == "样本任务口径" else f"{metric_name}来源：当天 Facebook 任务总口径"
-            return [
+            lines = [
                 f"日期：{_text(item.get('day_key')) or '-'}",
                 f"线路：{_text(item.get('line_label')) or '-'}",
                 f"账号：{_text(item.get('account_name')) or '-'}",
-                source,
             ]
+            drama_title = _text(item.get("drama_title"))
+            if drama_title:
+                lines.append(f"剧名：{drama_title}")
+            scope = _text(item.get("metric_scope")) or "未匹配到样本任务"
+            lines.append(f"{metric_name}来源：{scope}")
+            return lines
 
         payload = {
             "available": True,

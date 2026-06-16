@@ -38,6 +38,9 @@ HEARTBEAT_RE = re.compile(r"^\[heartbeat\]\s+(?P<stage>.+)$")
 WORKER_EXIT_RE = re.compile(rf"^\[(?P<ts>[^\]]+)\]\s+line=(?P<line>{LINE_PATTERN})\s+exited code=(?P<code>-?\d+);")
 ACCOUNT_EMPTY_RE = re.compile(rf"^\[(?P<ts>[^\]]+)\]\s+(?P<line>{LINE_PATTERN})\s+选账号失败：账号池\s+(?P<pool>\S+)\s+没有可用账号；")
 TARGET_RESET_RE = re.compile(rf"^\[(?P<ts>[^\]]+)\]\s+(?P<line>{LINE_PATTERN})\s+达标标签已重置：(?P<details>.+)$")
+TARGET_STOP_RE = re.compile(
+    rf"^\[(?P<ts>[^\]]+)\]\s+(?P<line>{LINE_PATTERN})\s+已达成账号目标并停止：账号池=(?P<pool>\S+)，账号日目标=(?P<target>\d+)，(?P<details>.+)$"
+)
 
 
 @dataclass
@@ -50,6 +53,7 @@ class LineStatus:
     last_summary: str = "-"
     note: str = ""
     last_update: str = "-"
+    target_reached: bool = False
 
 
 def _tail_lines(path: Path, limit: int = 300) -> list[str]:
@@ -111,6 +115,7 @@ def _parse_line_status(line_name: str, *, state_root: Path, day: str) -> LineSta
     latest_exit: tuple[str, str] | None = None
     latest_empty: tuple[str, str] | None = None
     latest_reset: tuple[str, str] | None = None
+    latest_target_stop: tuple[str, str, str] | None = None
 
     for line in forever_lines:
         match = ROUND_START_RE.match(line)
@@ -142,6 +147,10 @@ def _parse_line_status(line_name: str, *, state_root: Path, day: str) -> LineSta
         match = TARGET_RESET_RE.match(line)
         if match and match.group("line") == line_name:
             latest_reset = (match.group("ts"), match.group("details"))
+            continue
+        match = TARGET_STOP_RE.match(line)
+        if match and match.group("line") == line_name:
+            latest_target_stop = (match.group("ts"), match.group("pool"), match.group("details"))
             continue
 
     latest_heartbeat_line = "-"
@@ -175,6 +184,11 @@ def _parse_line_status(line_name: str, *, state_root: Path, day: str) -> LineSta
                 pass
     if latest_error and (not status.note):
         status.note = f"最近一轮命令非零：{latest_error[1]}"
+    if latest_target_stop:
+        status.target_reached = True
+        status.state = "已完成"
+        status.last_update = latest_target_stop[0]
+        status.note = f"已达成账号目标并停止：{latest_target_stop[1]}"
     if latest_empty:
         status.note = f"账号池无可用账号：{latest_empty[1]}"
         if line_name == "realtime":
@@ -182,6 +196,8 @@ def _parse_line_status(line_name: str, *, state_root: Path, day: str) -> LineSta
         else:
             status.state = "空闲"
         status.last_update = latest_empty[0]
+        if status.target_reached:
+            status.note = f"{status.note}；已达成账号目标"
     if latest_reset:
         extra = f"；最近重置：{latest_reset[0]}"
         status.note = f"{status.note}{extra}" if status.note else f"最近重置：{latest_reset[0]}"
@@ -192,11 +208,28 @@ def _parse_line_status(line_name: str, *, state_root: Path, day: str) -> LineSta
     return status
 
 
-def _render_report(*, state_root: Path, day: str) -> str:
+def _parse_line_names(raw: str) -> list[str]:
+    if not str(raw or "").strip():
+        return list(LINE_ORDER)
+    values = []
+    for item in str(raw).split(","):
+        normalized = str(item or "").strip().lower()
+        if not normalized:
+            continue
+        if normalized not in LINE_ORDER:
+            raise ValueError(f"unsupported line name: {normalized}")
+        if normalized not in values:
+            values.append(normalized)
+    return values or list(LINE_ORDER)
+
+
+def _render_report(*, state_root: Path, day: str, line_names: list[str]) -> tuple[str, list[LineStatus]]:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = [f"[{now}] continuous-loop 状态", ""]
-    for line_name in LINE_ORDER:
+    statuses: list[LineStatus] = []
+    for line_name in line_names:
         status = _parse_line_status(line_name, state_root=state_root, day=day)
+        statuses.append(status)
         lines.extend(
             [
                 f"{line_name} 线",
@@ -210,7 +243,11 @@ def _render_report(*, state_root: Path, day: str) -> str:
             ]
         )
     lines.append(f"状态目录：{state_root / day}")
-    return "\n".join(lines)
+    return "\n".join(lines), statuses
+
+
+def _all_target_reached(statuses: list[LineStatus]) -> bool:
+    return bool(statuses) and all(item.target_reached for item in statuses)
 
 
 def main() -> int:
@@ -220,14 +257,17 @@ def main() -> int:
     parser.add_argument("--day", default=datetime.now().strftime("%Y-%m-%d"), help="State day directory (YYYY-MM-DD).")
     parser.add_argument("--once", action="store_true", help="Print one report and exit.")
     parser.add_argument("--output-file", default="", help="Optional file to append reports to.")
+    parser.add_argument("--lines", default=",".join(LINE_ORDER), help="Comma-separated line names to monitor.")
+    parser.add_argument("--exit-when-all-target-reached", action="store_true", help="Exit when all monitored lines have reached account targets.")
     args = parser.parse_args()
 
     state_root = Path(args.state_root).expanduser().resolve()
     output_path = Path(args.output_file).expanduser().resolve() if str(args.output_file).strip() else None
     interval = max(5, int(args.interval_seconds or 300))
+    line_names = _parse_line_names(args.lines)
 
     while True:
-        report = _render_report(state_root=state_root, day=args.day)
+        report, statuses = _render_report(state_root=state_root, day=args.day, line_names=line_names)
         print(report, flush=True)
         print("", flush=True)
         if output_path is not None:
@@ -235,6 +275,8 @@ def main() -> int:
             with output_path.open("a", encoding="utf-8") as handle:
                 handle.write(report + "\n\n")
         if args.once:
+            return 0
+        if args.exit_when_all_target_reached and _all_target_reached(statuses):
             return 0
         time.sleep(interval)
 
