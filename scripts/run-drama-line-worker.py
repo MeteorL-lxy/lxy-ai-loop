@@ -51,22 +51,34 @@ def _is_realtime_no_material_error(stderr_text: str) -> bool:
     )
 
 
-def _write_realtime_no_material_round_json(
+def _is_creative_list_no_material_error(stderr_text: str) -> bool:
+    text = str(stderr_text or "")
+    return any(
+        marker in text
+        for marker in (
+            "创意列表线路当前没有匹配到可下载外部素材",
+            "创意列表线路已匹配到候选素材，但没有可直接进入剪辑的外部视频",
+        )
+    )
+
+
+def _write_material_unavailable_round_json(
     *,
     json_path: Path,
     line_name: str,
     round_name: str,
     requested_count: int,
+    status: str,
     message: str,
 ) -> None:
     payload = {
-        "status": "no_realtime_material",
+        "status": str(status or "").strip() or "no_material",
         "mode": "continuous",
         "platform": "FACEBOOK",
         "line_name": line_name,
         "round_name": round_name,
         "requested_count": int(requested_count or 0),
-        "message": str(message or "").strip() or "实时榜当前没有可下载外部素材",
+        "message": str(message or "").strip() or "当前没有可用素材",
         "items": [],
         "publish_records": [],
         "report_zh": {
@@ -307,12 +319,17 @@ def _requested_count(pool_name: str, run_dir: Path, *, platform: str, configured
         account_success_target=account_success_target,
     )
     eligible = int(status.get("eligible_pool_size") or 0)
-    if eligible <= 0:
+    unmet_accounts = int(status.get("unmet_account_count") or 0)
+    if account_success_target > 0:
+        effective_eligible = max(0, unmet_accounts)
+    else:
+        effective_eligible = max(0, eligible)
+    if effective_eligible <= 0:
         return 0, status
     if configured_count > 0:
-        requested = min(configured_count, eligible)
+        requested = min(configured_count, effective_eligible)
     else:
-        requested = eligible
+        requested = effective_eligible
     return max(0, requested), status
 
 
@@ -366,6 +383,12 @@ def _write_summary(
         elif payload_status == "no_realtime_material":
             status = "blocked"
             status_label = "等待素材"
+            requested = max(requested, requested_arg)
+            planned = max(planned, requested_arg)
+            unsubmitted = max(unsubmitted, requested_arg)
+        elif payload_status == "no_creative_list_material":
+            status = "blocked"
+            status_label = "素材未命中"
             requested = max(requested, requested_arg)
             planned = max(planned, requested_arg)
             unsubmitted = max(unsubmitted, requested_arg)
@@ -425,6 +448,10 @@ def main() -> int:
     realtime_no_material_sleep = _env_int(
         "BARRY_LOOP_REALTIME_NO_MATERIAL_SLEEP_SECONDS",
         3600 if _is_realtime_rank_line(line_name) else 0,
+    )
+    creative_list_no_material_sleep = _env_int(
+        "BARRY_LOOP_CREATIVE_LIST_NO_MATERIAL_SLEEP_SECONDS",
+        3600 if str(line_name or "").strip().lower() in {"creative_list", "creative_list_day"} else 0,
     )
     creative_list_material_only = "1" if _truthy(os.getenv("BARRY_LOOP_CREATIVE_LIST_MATERIAL_ONLY", "0")) else "0"
     wait_for_line = str(os.getenv("BARRY_LOOP_WAIT_FOR_LINE") or "").strip().lower()
@@ -583,12 +610,26 @@ def main() -> int:
             and _is_realtime_no_material_error(log_text)
         )
         if realtime_no_material and not _json_file_has_payload(json_path):
-            _write_realtime_no_material_round_json(
+            _write_material_unavailable_round_json(
                 json_path=json_path,
                 line_name=line_name,
                 round_name=round_name,
                 requested_count=requested,
+                status="no_realtime_material",
                 message="实时榜当前没有可下载外部素材；已等待下一小时重新拉取。",
+            )
+        creative_list_no_material = (
+            str(line_name or "").strip().lower() in {"creative_list", "creative_list_day"}
+            and _is_creative_list_no_material_error(log_text)
+        )
+        if creative_list_no_material and not _json_file_has_payload(json_path):
+            _write_material_unavailable_round_json(
+                json_path=json_path,
+                line_name=line_name,
+                round_name=round_name,
+                requested_count=requested,
+                status="no_creative_list_material",
+                message="创意列表当前未命中可下载外部素材；整轮剧场已完成扫描，不回退到官方选剧逻辑。",
             )
         if proc.returncode != 0:
             _log(f"{label} 命令返回非零（rc={proc.returncode}），继续按结果文件汇总。")
@@ -614,6 +655,12 @@ def main() -> int:
                 f"{label} 未拿到可用实时榜素材：等待 {realtime_no_material_sleep}s 后再拉取下一轮，不重置账号达标标签。"
             )
             time.sleep(max(5, realtime_no_material_sleep))
+            continue
+        if creative_list_no_material and creative_list_no_material_sleep > 0:
+            _log(
+                f"{label} 创意列表整轮剧场已扫空：等待 {creative_list_no_material_sleep}s 后再开启下一轮扫描。"
+            )
+            time.sleep(max(5, creative_list_no_material_sleep))
             continue
         _log(
             f"{label} 完成：成功 {metrics['success']}，失败 {metrics['failed']}，处理中 {metrics['processing']}，未提交 {metrics['unsubmitted']}。"

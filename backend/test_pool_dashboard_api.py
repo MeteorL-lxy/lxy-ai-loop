@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -22,7 +25,15 @@ ANALYSIS_REPORT_DIR = Path("/Users/xinyuliu/Downloads/AI Loop/分析日报")
 DAILY_TOP_HISTORY_CACHE_PATH = RUNTIME_ROOT / "dashboard-cache" / "daily_top_history.json"
 TREND_BASELINE_START = "2026-05-19"
 TREND_BASELINE_END = "2026-06-08"
+TREND_RUNNING_START = "2026-06-09"
 DAILY_TOP_HISTORY_START = "2026-05-19"
+AI_LOOP_REPORTING_SSH_HOST = os.getenv("AI_LOOP_REPORTING_SSH_HOST", "124.174.76.6").strip()
+AI_LOOP_REPORTING_SSH_USER = os.getenv("AI_LOOP_REPORTING_SSH_USER", "root").strip()
+AI_LOOP_REPORTING_SSH_PASSWORD = os.getenv("AI_LOOP_REPORTING_SSH_PASSWORD", "").strip()
+AI_LOOP_REPORTING_P0_SUMMARY_PATH = os.getenv(
+    "AI_LOOP_REPORTING_P0_SUMMARY_PATH",
+    "/opt/ai-loop-dashboard/runtime/p0-summary.json",
+).strip()
 
 LINE_LABELS = {
     "ordinary": "普通池",
@@ -309,6 +320,14 @@ def _json_load(path: Path) -> dict[str, Any]:
 def _json_dump(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _today_key() -> str:
+    return date.today().isoformat()
+
+
+def _yesterday_key() -> str:
+    return (date.today() - timedelta(days=1)).isoformat()
 
 
 def _status_label(status: str) -> str:
@@ -618,6 +637,234 @@ class TestPoolDashboardService:
     def _set_cached_remote(self, key: str, ttl_seconds: int, payload: dict[str, Any]) -> dict[str, Any]:
         self._remote_cache[key] = (time.time() + max(1, ttl_seconds), payload)
         return payload
+
+    def _load_ai_loop_reporting_summary(self, *, refresh: bool = False) -> dict[str, Any]:
+        cache_key = "ai-loop-reporting-p0-summary"
+        if refresh:
+            self._remote_cache.pop(cache_key, None)
+        cached = self._get_cached_remote(cache_key)
+        if cached is not None:
+            return cached
+
+        if not AI_LOOP_REPORTING_SSH_PASSWORD:
+            return {
+                "available": False,
+                "note": "未配置 AI_LOOP_REPORTING_SSH_PASSWORD，暂时不能读取 ai-loop-reporting 汇总。",
+            }
+        if not shutil.which("sshpass"):
+            return {
+                "available": False,
+                "note": "本机缺少 sshpass，暂时不能读取 ai-loop-reporting 汇总。",
+            }
+
+        remote = f"{AI_LOOP_REPORTING_SSH_USER}@{AI_LOOP_REPORTING_SSH_HOST}"
+        command = [
+            "sshpass",
+            "-e",
+            "ssh",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "ConnectTimeout=8",
+            remote,
+            f"cat {AI_LOOP_REPORTING_P0_SUMMARY_PATH}",
+        ]
+        env = dict(os.environ)
+        env["SSHPASS"] = AI_LOOP_REPORTING_SSH_PASSWORD
+        try:
+            completed = subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=25,
+                env=env,
+            )
+            payload = json.loads(completed.stdout or "{}")
+        except Exception as exc:
+            return {
+                "available": False,
+                "note": f"读取 ai-loop-reporting 汇总失败：{exc}",
+            }
+        return self._set_cached_remote(cache_key, 300, payload if isinstance(payload, dict) else {})
+
+    def _build_trend_analyzer_from_ai_loop_reporting(self, payload: dict[str, Any]) -> dict[str, Any]:
+        owner_rows = payload.get("owner_day_rows") if isinstance(payload.get("owner_day_rows"), list) else []
+        if not owner_rows:
+            return {
+                "available": False,
+                "note": "ai-loop-reporting 汇总里还没有 owner_day_rows。",
+            }
+
+        latest_allowed_day = _yesterday_key()
+        daily_map: dict[str, dict[str, Any]] = {}
+        for row in owner_rows:
+            if not isinstance(row, dict):
+                continue
+            day_key = _text(row.get("day"))
+            if not day_key or day_key < TREND_BASELINE_START or day_key > latest_allowed_day:
+                continue
+            bucket = daily_map.setdefault(
+                day_key,
+                {
+                    "day": day_key,
+                    "publish_count": 0,
+                    "success_count": 0,
+                    "failed_count": 0,
+                    "view_total": 0,
+                    "click_total": 0,
+                    "interaction_total": 0,
+                },
+            )
+            bucket["publish_count"] += _safe_int(row.get("publish_actions"))
+            bucket["success_count"] += _safe_int(row.get("success_videos"))
+            bucket["failed_count"] += _safe_int(row.get("failed_videos"))
+            bucket["view_total"] += _safe_int(row.get("views"))
+            bucket["click_total"] += _safe_int(row.get("link_clicks"))
+            bucket["interaction_total"] += (
+                _safe_int(row.get("likes"))
+                + _safe_int(row.get("comments"))
+                + _safe_int(row.get("shares"))
+            )
+
+        rows = sorted(daily_map.values(), key=lambda item: _text(item.get("day")), reverse=True)
+        if not rows:
+            return {
+                "available": False,
+                "note": "ai-loop-reporting 汇总里还没有昨天以前的全体日样本。",
+            }
+
+        for row in rows:
+            publish_count = _safe_int(row.get("publish_count"))
+            success_count = _safe_int(row.get("success_count"))
+            row["success_rate"] = round((success_count / publish_count) * 100, 2) if publish_count else 0.0
+
+        latest = rows[0]
+        previous = rows[1] if len(rows) > 1 else None
+        baseline_rows = [
+            row for row in rows
+            if TREND_BASELINE_START <= _text(row.get("day")) <= TREND_BASELINE_END
+        ] or list(rows)
+
+        def avg(metric: str, bucket_rows: list[dict[str, Any]]) -> float:
+            if not bucket_rows:
+                return 0.0
+            return sum(_safe_float(row.get(metric)) for row in bucket_rows) / len(bucket_rows)
+
+        latest_day = _text(latest.get("day"))
+        previous_day = _text(previous.get("day")) if previous else ""
+        running_rows = [
+            row for row in rows
+            if TREND_RUNNING_START <= _text(row.get("day")) <= latest_day
+        ] or list(rows)
+
+        def compare_card(label: str, metric: str, kind: str = "integer") -> dict[str, Any]:
+            current_value = _safe_float(latest.get(metric))
+            previous_value = _safe_float(previous.get(metric)) if previous else 0.0
+            delta = current_value - previous_value if previous else None
+            delta_pct = None
+            if previous and previous_value:
+                delta_pct = (delta / previous_value) * 100
+            note = f"前一天 {previous_day}: {previous_value:.2f}" if previous else "暂无前一天样本"
+            return self._trend_metric_card(
+                label=f"单日{label}对比",
+                value=current_value,
+                kind=kind,
+                note=note,
+                delta=delta,
+                delta_pct=delta_pct,
+            )
+
+        baseline_cards = [
+            self._trend_metric_card(
+                label="全体每日播放平均",
+                value=avg("view_total", baseline_rows),
+                kind="integer",
+                note=f"基线 {TREND_BASELINE_START} 至 {TREND_BASELINE_END} · 样本 {len(baseline_rows)} 天",
+            ),
+            self._trend_metric_card(
+                label="全体每日互动平均",
+                value=avg("interaction_total", baseline_rows),
+                kind="integer",
+                note="点赞 + 评论 + 分享",
+            ),
+            self._trend_metric_card(
+                label="全体每日发布平均",
+                value=avg("publish_count", baseline_rows),
+                kind="integer",
+                note="ai-loop-reporting 全体日汇总口径",
+            ),
+            self._trend_metric_card(
+                label="全体每日成功平均",
+                value=avg("success_count", baseline_rows),
+                kind="integer",
+                note="当日发布成功数",
+            ),
+            self._trend_metric_card(
+                label="全体每日点击平均",
+                value=avg("click_total", baseline_rows),
+                kind="integer",
+                note="推广链接点击次数",
+            ),
+            self._trend_metric_card(
+                label="全体每日成功率均值",
+                value=avg("success_rate", baseline_rows),
+                kind="percent",
+                note="成功数 / 发布数",
+            ),
+        ]
+        compare_cards = [
+            compare_card("播放", "view_total"),
+            compare_card("互动", "interaction_total"),
+            compare_card("发布", "publish_count"),
+            compare_card("成功", "success_count"),
+            compare_card("点击", "click_total"),
+            compare_card("成功率", "success_rate", "percent"),
+        ]
+        running_label_suffix = latest_day or "前一天"
+        running_average_cards = [
+            self._trend_metric_card(
+                label=f"6月9号到{running_label_suffix}平均播放",
+                value=avg("view_total", running_rows),
+                kind="integer",
+                note=f"{TREND_RUNNING_START} 至 {latest_day} · 样本 {len(running_rows)} 天",
+            ),
+            self._trend_metric_card(
+                label=f"6月9号到{running_label_suffix}平均互动",
+                value=avg("interaction_total", running_rows),
+                kind="integer",
+                note="点赞 + 评论 + 分享",
+            ),
+            self._trend_metric_card(
+                label=f"6月9号到{running_label_suffix}平均发布",
+                value=avg("publish_count", running_rows),
+                kind="integer",
+                note="ai-loop-reporting 全体日汇总口径",
+            ),
+            self._trend_metric_card(
+                label=f"6月9号到{running_label_suffix}平均点击",
+                value=avg("click_total", running_rows),
+                kind="integer",
+                note="推广链接点击次数",
+            ),
+        ]
+        daily_rows = rows[:12]
+        return {
+            "available": True,
+            "source": "ai_loop_reporting_p0_summary",
+            "baseline_start": TREND_BASELINE_START,
+            "baseline_end": TREND_BASELINE_END,
+            "baseline_days": len(baseline_rows),
+            "latest_day": latest_day,
+            "latest_generated_at": _text(payload.get("generated_at")),
+            "latest_summary": _text(payload.get("data_freshness", {}).get("policy") if isinstance(payload.get("data_freshness"), dict) else ""),
+            "latest_file_name": "p0-summary.json",
+            "latest_note": f"基于 ai-loop-reporting 全体汇总，统计截止 {latest_day}",
+            "baseline_cards": baseline_cards,
+            "compare_cards": compare_cards,
+            "running_average_cards": running_average_cards,
+            "daily_rows": daily_rows,
+        }
 
     def _fetch_publish_analysis_metrics(self, *, start_date: str = "", end_date: str = "") -> dict[str, Any]:
         cache_key = f"publish:{start_date}:{end_date}"
@@ -1484,11 +1731,19 @@ class TestPoolDashboardService:
     def get_trend_analyzer(self, *, refresh: bool = False) -> dict[str, Any]:
         if refresh:
             self._remote_cache.pop("analysis-report-rows", None)
+            self._remote_cache.pop("ai-loop-reporting-p0-summary", None)
+
+        remote_payload = self._load_ai_loop_reporting_summary(refresh=refresh)
+        if remote_payload.get("available") is not False:
+            remote_trend = self._build_trend_analyzer_from_ai_loop_reporting(remote_payload)
+            if remote_trend.get("available"):
+                return remote_trend
+
         rows = self._load_analysis_report_rows()
         if not rows:
             return {
                 "available": False,
-                "note": "当前还没有可解析的分析日报文件。",
+                "note": _text(remote_payload.get("note")) or "当前还没有可解析的分析日报文件。",
             }
 
         latest = rows[0]
@@ -1507,6 +1762,12 @@ class TestPoolDashboardService:
 
         latest_day = _text(latest.get("report_day"))
         previous_day = _text(previous.get("report_day")) if previous else ""
+        running_rows = [
+            row for row in rows
+            if TREND_RUNNING_START <= _text(row.get("report_day")) <= latest_day
+        ]
+        if not running_rows:
+            running_rows = list(rows)
 
         def compare_card(label: str, metric: str, kind: str = "integer") -> dict[str, Any]:
             current_value = _safe_float(latest.get(metric))
@@ -1571,28 +1832,29 @@ class TestPoolDashboardService:
             compare_card("点击", "click_total"),
             compare_card("成功率", "success_rate", "percent"),
         ]
+        running_label_suffix = latest_day or "前一天"
         running_average_cards = [
             self._trend_metric_card(
-                label="5月19号到最新一天平均播放",
-                value=avg("view_total", rows),
+                label=f"6月9号到{running_label_suffix}平均播放",
+                value=avg("view_total", running_rows),
                 kind="integer",
-                note=f"{_text(rows[-1].get('report_day'))} 至 {latest_day} · 样本 {len(rows)} 天",
+                note=f"{TREND_RUNNING_START} 至 {latest_day} · 样本 {len(running_rows)} 天",
             ),
             self._trend_metric_card(
-                label="5月19号到最新一天平均互动",
-                value=avg("interaction_total", rows),
+                label=f"6月9号到{running_label_suffix}平均互动",
+                value=avg("interaction_total", running_rows),
                 kind="integer",
                 note="点赞 + 评论 + 分享",
             ),
             self._trend_metric_card(
-                label="5月19号到最新一天平均发布",
-                value=avg("publish_count", rows),
+                label=f"6月9号到{running_label_suffix}平均发布",
+                value=avg("publish_count", running_rows),
                 kind="integer",
                 note="总体概览日报口径",
             ),
             self._trend_metric_card(
-                label="5月19号到最新一天平均点击",
-                value=avg("click_total", rows),
+                label=f"6月9号到{running_label_suffix}平均点击",
+                value=avg("click_total", running_rows),
                 kind="integer",
                 note="推广链接点击次数",
             ),

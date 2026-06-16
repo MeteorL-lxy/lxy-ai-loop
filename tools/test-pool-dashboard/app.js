@@ -336,7 +336,7 @@ function renderLineCards(overview, failures) {
       ? `<div class="issue-list">${issues.slice(0, 3).map((item) => `
           <div class="issue-item">
             <span class="issue-time">${esc(item.timeText)}</span>
-            <span>${esc(item.text)}${item.count > 1 ? `（${fmtNum(item.count)}次）` : ""}</span>
+            <span class="issue-text">${esc(item.text)}${item.count > 1 ? `（${fmtNum(item.count)}次）` : ""}</span>
           </div>
         `).join("")}</div>`
       : `<div class="line-block-text">今天暂时没有明确问题，先继续看实时状态。</div>`;
@@ -417,7 +417,6 @@ function renderTopPlay(overview) {
       </div>
       <div class="tag-row">
         <span class="line-chip">${esc(item.line_label || lineLabel(item.line_name))}</span>
-        <span class="line-chip">${esc(item.account_name || "-")}</span>
         ${item.clip_method ? `<span class="line-chip">${esc(item.clip_method)}</span>` : ""}
       </div>
       <div class="top-play-copy-title">正文</div>
@@ -460,7 +459,7 @@ function renderDailyTopHistory(overview) {
     <div class="history-card-grid-sample">
       ${summaryCards}
     </div>
-    <div class="table-wrap history-table-wrap">
+    <div class="table-wrap table-wrap-five-rows history-table-wrap">
       <table class="data-table daily-history-table">
         <colgroup>
           <col class="daily-col-day">
@@ -547,6 +546,10 @@ function renderHistory(overview) {
     };
 
     const dailyRows = payload.daily_rows || [];
+    const runningAverageTitle = payload.latest_day
+      ? `从 2026-06-09 到 ${payload.latest_day} 的均值`
+      : "从 2026-06-09 到前一天的均值";
+
     node.innerHTML = `
       <div class="history-summary">
         <div class="history-summary-main">
@@ -572,7 +575,7 @@ function renderHistory(overview) {
       </section>
 
       <section class="history-section">
-        <h3>从 5 月 19 号到最新一天的均值</h3>
+        <h3>${esc(runningAverageTitle)}</h3>
         <div class="history-card-grid compact">
           ${(payload.running_average_cards || []).map(renderCard).join("")}
         </div>
@@ -580,7 +583,7 @@ function renderHistory(overview) {
 
       <section class="history-section">
         <h3>最近日报时间线</h3>
-        <div class="table-wrap">
+        <div class="table-wrap table-wrap-five-rows">
           <table class="data-table compact">
             <thead>
               <tr>

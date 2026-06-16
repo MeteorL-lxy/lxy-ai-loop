@@ -14,6 +14,8 @@ import sys
 import time
 
 from flywheel.clipping.ai_cut_animation import (
+    choose_success_segment,
+    create_short_drama_clip_task,
     DEFAULT_AUTO_CLIP_ENABLED,
     DEFAULT_MAX_EPISODES_PER_SERIAL,
     DEFAULT_MAX_TOTAL_DURATION_SECONDS,
@@ -25,6 +27,11 @@ from flywheel.clipping.ai_cut_animation import (
     DEFAULT_SYNC_MATERIAL_CATEGORY_ID,
     DEFAULT_TEMPLATE_ID,
     DEFAULT_USE_AUTO_MIGRATION,
+    describe_serial_failure,
+    get_short_drama_clip_task,
+    wait_for_serial_success_segment,
+    wait_for_short_drama_clip_task,
+    download_segment_video,
 )
 from flywheel.selection.realtime_rank_source import (
     fetch_creative_list_candidates,
@@ -754,6 +761,91 @@ def _line_name() -> str:
 
 def _line_in(*names: str) -> bool:
     return _line_name() in {str(item).strip().lower() for item in names if str(item).strip()}
+
+
+def _ordinary_ai_cut_404_retry_enabled() -> bool:
+    return _line_name() == "ordinary" and str(
+        os.getenv("BARRY_ORDINARY_AI_CUT_SEGMENT_404_RECHECK_ENABLED", "1")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_retryable_ai_cut_segment_404_failure(serial_payload: dict[str, object] | None) -> bool:
+    if not isinstance(serial_payload, dict):
+        return False
+    download_status = str(serial_payload.get("download_status") or "").strip().lower()
+    clip = serial_payload.get("clip") if isinstance(serial_payload.get("clip"), dict) else {}
+    clip_status = str((clip or {}).get("status") or "").strip().lower()
+    if download_status != "success" or clip_status != "failed":
+        return False
+    segments = clip.get("segments") if isinstance(clip, dict) else []
+    if not isinstance(segments, list):
+        return False
+    for item in segments:
+        if not isinstance(item, dict):
+            continue
+        message = str(item.get("last_error") or "").strip()
+        if "404 Not Found" in message and "ffprobe" in message:
+            return True
+    return False
+
+
+def _retry_ai_cut_segment_404_if_needed(
+    *,
+    task_id: str,
+    third_serial_id: str,
+    preferred_episode_order: int,
+    request_timeout: int,
+    serial_payload: dict[str, object] | None,
+    initial_task_body: dict[str, object] | None,
+) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+    if not _ordinary_ai_cut_404_retry_enabled():
+        return initial_task_body, serial_payload
+    if not _is_retryable_ai_cut_segment_404_failure(serial_payload):
+        return initial_task_body, serial_payload
+
+    recheck_attempts = max(1, int(os.getenv("BARRY_AI_CUT_SEGMENT_404_RECHECK_ATTEMPTS") or 3))
+    recheck_sleep = max(5, int(os.getenv("BARRY_AI_CUT_SEGMENT_404_RECHECK_SLEEP_SECONDS") or 20))
+    current_task_body = dict(initial_task_body or {})
+    current_serial_payload = dict(serial_payload or {})
+    normalized_serial_id = str(third_serial_id or "").strip()
+
+    for attempt in range(1, recheck_attempts + 1):
+        _emit_status_line(
+            "aicut_segment_404_recheck",
+            {
+                "line": _line_name(),
+                "task_id": task_id,
+                "third_serial_id": normalized_serial_id,
+                "attempt": attempt,
+                "max_attempts": recheck_attempts,
+                "sleep_seconds": recheck_sleep,
+            },
+        )
+        time.sleep(recheck_sleep)
+        current_task_body = get_short_drama_clip_task(task_id, timeout=request_timeout)
+        for payload in (current_task_body.get("serials") or []):
+            if str((payload or {}).get("third_serial_id") or "").strip() != normalized_serial_id:
+                continue
+            current_serial_payload = dict(payload)
+            chosen = choose_success_segment(
+                current_serial_payload,
+                preferred_episode_order=preferred_episode_order,
+            )
+            if chosen:
+                _emit_status_line(
+                    "aicut_segment_404_recovered",
+                    {
+                        "line": _line_name(),
+                        "task_id": task_id,
+                        "third_serial_id": normalized_serial_id,
+                        "attempt": attempt,
+                    },
+                )
+                return current_task_body, current_serial_payload
+            break
+        if not _is_retryable_ai_cut_segment_404_failure(current_serial_payload):
+            break
+    return current_task_body, current_serial_payload
 
 
 def _realtime_material_mode_enabled() -> bool:
@@ -2000,6 +2092,20 @@ def _clip_batch_item(item: dict, args: argparse.Namespace, config) -> dict:
     serial_payload = refreshed_serial_payload or serial_payload
     if not serial_payload:
         raise RuntimeError(f"ai-cut 未返回 serial 结果: {third_serial_id}")
+    if not chosen_segment:
+        task_body, serial_payload = _retry_ai_cut_segment_404_if_needed(
+            task_id=task_id,
+            third_serial_id=third_serial_id,
+            preferred_episode_order=episode_order,
+            request_timeout=args.submit_timeout,
+            serial_payload=serial_payload,
+            initial_task_body=task_body,
+        )
+        if isinstance(serial_payload, dict):
+            chosen_segment = choose_success_segment(
+                serial_payload,
+                preferred_episode_order=episode_order,
+            )
     if not chosen_segment:
         raise RuntimeError(describe_serial_failure(serial_payload))
 
