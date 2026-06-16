@@ -33,14 +33,17 @@ from flywheel.clipping.ai_cut_animation import (
     wait_for_short_drama_clip_task,
     download_segment_video,
 )
+from flywheel.clipping.episode_selector import select_direct_episode_info_episode
 from flywheel.selection.realtime_rank_source import (
     fetch_creative_list_candidates,
     fetch_realtime_rank_candidates,
     mark_realtime_hour_exhausted,
 )
+from inbeidou_cli import get_tasks
 
 
 MODULE_ROOT_DIR = Path(__file__).resolve().parents[2]
+PROMOTION_INTRO_LINE = "👇 Click the link below to watch the full episode!"
 
 
 def _emit_status_line(event: str, payload: dict[str, object]) -> None:
@@ -59,6 +62,23 @@ def _count_skip_reasons(items: list[dict[str, object]]) -> dict[str, int]:
         reason = str(item.get("reason") or "unknown").strip() or "unknown"
         counts[reason] = counts.get(reason, 0) + 1
     return counts
+
+
+def _compose_caption_with_intro(base_text: str, promotion_link: str) -> str:
+    intro = PROMOTION_INTRO_LINE
+    text = str(base_text or "").strip()
+    link = str(promotion_link or "").strip()
+    if text.startswith(intro):
+        return text
+    if text and link and link in text:
+        body = text
+    elif text and link:
+        body = f"{link}\n{text}"
+    else:
+        body = text or link
+    if not body:
+        return intro
+    return f"{intro}\n{body}"
 
 
 def bind(ctx):
@@ -1104,7 +1124,12 @@ def _select_yourchannel_sources(args: argparse.Namespace, config, *, target_coun
         if not drama:
             skipped.append({"title": title, "app_id": "yourchannel_drama", "reason": "official_title_not_found"})
             continue
-        episode = _select_or_validate_batch_episode(drama, args)
+        retry_count = max(0, int(getattr(args, "source_prepare_retry_count", 0) or 0))
+        episode = select_direct_episode_info_episode(
+            str(drama.get("serial_id") or ""),
+            "yourchannel_drama",
+            retry_count=retry_count,
+        )
         if not bool(episode.get("supported")):
             skipped.append(
                 {
@@ -2187,9 +2212,11 @@ def _clip_batch_item(item: dict, args: argparse.Namespace, config) -> dict:
 def _promotion_caption(item: dict, platform: str) -> dict[str, str]:
     existing = item.get("promotion") if isinstance(item.get("promotion"), dict) else {}
     if existing:
+        promotion_link = str(existing.get("promotion_link") or "").strip()
+        raw_caption = str(existing.get("caption") or item.get("caption") or "").strip()
         return {
-            "caption": str(existing.get("caption") or item.get("caption") or "").strip(),
-            "promotion_link": str(existing.get("promotion_link") or "").strip(),
+            "caption": _compose_caption_with_intro(raw_caption, promotion_link),
+            "promotion_link": promotion_link,
             "promotion_code": str(existing.get("promotion_code") or "").strip(),
             "promote_code_content": str(existing.get("promote_code_content") or "").strip(),
             "promotion_platform_id": str(existing.get("promotion_platform_id") or "").strip(),
@@ -2250,11 +2277,12 @@ def _promotion_caption(item: dict, platform: str) -> dict[str, str]:
     matched_official_used = bool(matched_official_task_id and primary_task_id == matched_official_task_id)
     use_realtime_app_fallback = _candidate_fetch_source(drama) == "realtime_rank_external" and not matched_official_used
     if not use_realtime_app_fallback:
-        caption = str(link_entry.get("promote_code_content") or "").strip() or promotion_link or str(drama.get("title") or "")
+        base_caption = str(link_entry.get("promote_code_content") or "").strip() or str(drama.get("title") or "")
+        caption = _compose_caption_with_intro(base_caption, str(promotion_link or ""))
     else:
         app_label = _app_label(str(drama.get("app_id") or drama.get("source_platform") or "")).strip() or str(drama.get("app_id") or "").strip() or "series"
         drama_title = str(drama.get("title") or "").strip() or "this series"
-        caption = "\n".join(
+        body = "\n".join(
             line
             for line in (
                 f"watch👉🏻 {promotion_link}".strip() if promotion_link else "",
@@ -2264,6 +2292,7 @@ def _promotion_caption(item: dict, platform: str) -> dict[str, str]:
             )
             if line
         ).strip() or promotion_link or drama_title
+        caption = _compose_caption_with_intro(body, str(promotion_link or ""))
     return {
         "caption": caption,
         "promotion_link": promotion_link,

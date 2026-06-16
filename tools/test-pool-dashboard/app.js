@@ -1,6 +1,7 @@
 const state = {
   autoRefreshMs: 30000,
   refreshing: false,
+  realtimeRefreshing: false,
   optionsLoaded: false,
   roundsLoaded: false,
   page: 1,
@@ -736,7 +737,7 @@ async function loadRounds() {
 }
 
 async function refreshAll({ forceRounds = false } = {}) {
-  if (state.refreshing) return;
+  if (state.refreshing || state.realtimeRefreshing) return;
   state.refreshing = true;
   qs("status-text").textContent = "刷新中";
   try {
@@ -775,6 +776,30 @@ async function refreshAll({ forceRounds = false } = {}) {
     showError(error);
   } finally {
     state.refreshing = false;
+  }
+}
+
+async function refreshRealtimePanels() {
+  if (state.refreshing || state.realtimeRefreshing) return;
+  state.realtimeRefreshing = true;
+  qs("status-text").textContent = "刷新中";
+  try {
+    const [overview, failures] = await Promise.all([
+      fetchJson("./api/test-pool/realtime-overview?days=30"),
+      fetchJson("./api/test-pool/failures?limit=80"),
+    ]);
+
+    renderToday(overview);
+    renderLineCards(overview, failures);
+    renderTopPlay(overview);
+
+    qs("status-text").textContent = "已连接";
+    qs("db-path").textContent = overview.db_path || qs("db-path").textContent || "-";
+    qs("last-updated").textContent = fmtDateTime(overview.last_exported_at);
+  } catch (error) {
+    showError(error);
+  } finally {
+    state.realtimeRefreshing = false;
   }
 }
 
@@ -828,5 +853,5 @@ function showError(error) {
 bindEvents();
 refreshAll().catch((error) => console.error(error));
 window.setInterval(() => {
-  refreshAll().catch((error) => console.error(error));
+  refreshRealtimePanels().catch((error) => console.error(error));
 }, state.autoRefreshMs);

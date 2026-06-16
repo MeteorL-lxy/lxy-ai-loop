@@ -16,6 +16,20 @@ sys.path.insert(0, str(ROOT_DIR / "backend"))
 from flywheel.daily_loop_targets import get_pool_target_status, select_balanced_account_ids  # noqa: E402
 
 
+LINE_GUARD_STATE_FILE = ".line_guard_state.json"
+VIDEO_ISSUE_FAILURE_PATTERNS = (
+    "分辨率错误",
+    "分辨率不符合要求",
+    "发布成片分辨率过低",
+    "视频文件上传失败",
+    "视频格式",
+    "仅支持 mp4",
+    "仅支持mp4",
+    "时长超出限制",
+    "视频分辨率",
+)
+
+
 def _truthy(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -156,6 +170,93 @@ def _json_file_has_payload(path: Path) -> bool:
     except Exception:
         return False
     return isinstance(payload, dict) and bool(payload)
+
+
+def _load_json_dict(path: Path) -> dict:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _line_guard_state_path(run_dir: Path) -> Path:
+    return run_dir / LINE_GUARD_STATE_FILE
+
+
+def _load_line_guard_state(run_dir: Path) -> dict:
+    payload = _load_json_dict(_line_guard_state_path(run_dir))
+    processed_rounds = payload.get("processed_rounds")
+    payload["processed_rounds"] = processed_rounds if isinstance(processed_rounds, list) else []
+    payload["video_issue_failure_hits"] = int(payload.get("video_issue_failure_hits") or 0)
+    payload["last_stop_reason"] = str(payload.get("last_stop_reason") or "")
+    return payload
+
+
+def _save_line_guard_state(run_dir: Path, payload: dict) -> None:
+    payload["updated_at"] = datetime.now().strftime("%F %T")
+    _line_guard_state_path(run_dir).write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _is_video_issue_reason(message: str) -> bool:
+    text = str(message or "").strip()
+    lowered = text.lower()
+    if not text:
+        return False
+    if "账号不能发布reel" in text or "cannot publish reel" in lowered or "can't publish reel" in lowered:
+        return False
+    return any(token.lower() in lowered for token in VIDEO_ISSUE_FAILURE_PATTERNS)
+
+
+def _round_video_issue_failures(json_path: Path) -> list[dict[str, str]]:
+    payload = _load_json_dict(json_path)
+    report = payload.get("report_zh") if isinstance(payload.get("report_zh"), dict) else {}
+    rows = report.get("发布失败任务") if isinstance(report.get("发布失败任务"), list) else []
+    failures: list[dict[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        reason = str(row.get("失败原因") or row.get("错误") or "").strip()
+        if not _is_video_issue_reason(reason):
+            continue
+        failures.append(
+            {
+                "account": str(row.get("账号") or "").strip(),
+                "title": str(row.get("短剧") or row.get("标题") or "").strip(),
+                "reason": reason,
+            }
+        )
+    return failures
+
+
+def _update_line_guard_for_round(
+    *,
+    run_dir: Path,
+    round_name: str,
+    json_path: Path,
+    threshold: int,
+) -> tuple[bool, int, list[dict[str, str]]]:
+    state = _load_line_guard_state(run_dir)
+    processed_rounds = [str(item).strip() for item in state.get("processed_rounds", []) if str(item).strip()]
+    if round_name not in processed_rounds:
+        failures = _round_video_issue_failures(json_path)
+        if failures:
+            state["video_issue_failure_hits"] = int(state.get("video_issue_failure_hits") or 0) + len(failures)
+            state["last_video_issue_failures"] = failures[:10]
+        processed_rounds.append(round_name)
+        state["processed_rounds"] = processed_rounds[-500:]
+        if int(state.get("video_issue_failure_hits") or 0) >= max(1, threshold):
+            first_reason = ""
+            if isinstance(state.get("last_video_issue_failures"), list) and state["last_video_issue_failures"]:
+                first_reason = str((state["last_video_issue_failures"][0] or {}).get("reason") or "").strip()
+            state["last_stop_reason"] = first_reason or f"视频问题累计达到 {threshold} 次"
+        _save_line_guard_state(run_dir, state)
+    total_hits = int(state.get("video_issue_failure_hits") or 0)
+    last_failures = state.get("last_video_issue_failures") if isinstance(state.get("last_video_issue_failures"), list) else []
+    return total_hits >= max(1, threshold), total_hits, [item for item in last_failures if isinstance(item, dict)]
 
 
 def _run_tracker_command(cmd: list[str], *, log_path: Path, stage: str, fallback_output: Path | None = None) -> bool:
@@ -459,6 +560,7 @@ def main() -> int:
     allow_reuse = _truthy(os.getenv("BARRY_LOOP_ALLOW_ACCOUNT_REUSE", "1"))
     realtime_enabled = "1" if _truthy(os.getenv("BARRY_REALTIME_RANK_ENABLED", "0")) else "0"
     realtime_material_only = "1" if _truthy(os.getenv("BARRY_LOOP_REALTIME_MATERIAL_ONLY", "0")) else "0"
+    video_issue_stop_threshold = _env_int("BARRY_LOOP_VIDEO_ISSUE_STOP_THRESHOLD", 3)
     tracker_config = _load_tracker_config()
 
     while True:
@@ -650,6 +752,12 @@ def main() -> int:
             tasks_path=tasks_path,
             log_path=log_path,
         )
+        stop_line, total_video_issue_hits, recent_video_failures = _update_line_guard_for_round(
+            run_dir=run_dir,
+            round_name=round_name,
+            json_path=json_path,
+            threshold=video_issue_stop_threshold,
+        )
         if realtime_no_material:
             _log(
                 f"{label} 未拿到可用实时榜素材：等待 {realtime_no_material_sleep}s 后再拉取下一轮，不重置账号达标标签。"
@@ -662,6 +770,15 @@ def main() -> int:
             )
             time.sleep(max(5, creative_list_no_material_sleep))
             continue
+        if stop_line:
+            recent_reason = ""
+            if recent_video_failures:
+                recent_reason = str(recent_video_failures[0].get("reason") or "").strip()
+            _log(
+                f"{label} 检测到发布后视频问题累计 {total_video_issue_hits} 次，已达到停线阈值 {video_issue_stop_threshold}；"
+                f"停止当前线路。最近问题={recent_reason or '未提供'}"
+            )
+            return 0
         _log(
             f"{label} 完成：成功 {metrics['success']}，失败 {metrics['failed']}，处理中 {metrics['processing']}，未提交 {metrics['unsubmitted']}。"
         )

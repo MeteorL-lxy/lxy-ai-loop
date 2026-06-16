@@ -23,7 +23,7 @@ UNSUPPORTED_REEL_PATTERNS = (
 
 SUCCESS_TARGET_RESET_FILE = ".success_target_reset.json"
 REEL_BLOCK_POOL_NAME = "facebook_drama_reel_block_pool"
-REEL_BLOCK_THRESHOLD = 3
+REEL_BLOCK_THRESHOLD = 1
 REEL_BLOCK_STATE_DIR = "runtime/account-flags"
 REEL_BLOCK_STATE_FILE = "reel_publish_block_state.json"
 REEL_BLOCK_LOCK_FILE = "reel_publish_block_state.lock"
@@ -115,7 +115,7 @@ def _ensure_reel_block_pool(pools: dict[str, Any]) -> dict[str, Any]:
     if REEL_BLOCK_POOL_NAME not in pools or not isinstance(pools.get(REEL_BLOCK_POOL_NAME), dict):
         pools[REEL_BLOCK_POOL_NAME] = {
             "platform": "FACEBOOK",
-            "description": "Temporary pool for accounts that repeatedly fail with 'cannot publish reel'. Use reel_publish_block_state to inspect which line they were moved from.",
+            "description": "不能发布 Reel 的账号隔离池，出现 1 次后立即移入；可在 reel_publish_block_state 中查看来源线路。",
             "account_ids": [],
         }
     pool = pools[REEL_BLOCK_POOL_NAME]

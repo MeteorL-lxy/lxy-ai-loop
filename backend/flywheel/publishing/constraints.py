@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -26,6 +27,10 @@ PLATFORM_HOST_CONFLICTS = {
     "INSTAGRAM": ("tiktok.com", "vm.tiktok.com", "vt.tiktok.com", "facebook.com", "fb.watch", "youtube.com", "youtu.be"),
     "YOUTUBE": ("tiktok.com", "vm.tiktok.com", "vt.tiktok.com", "facebook.com", "fb.watch", "instagram.com"),
 }
+
+
+def _allow_cross_platform_promotion_for_current_line() -> bool:
+    return str(os.getenv("BARRY_LOOP_LINE_NAME") or "").strip().lower() == "yourchannel"
 
 
 def _meta_int(meta: dict[str, Any], key: str) -> int:
@@ -75,7 +80,11 @@ def validate_promotion_constraints(platform: str, promotion: dict[str, Any] | No
             actual_platform_id_int = int(actual_platform_id)
         except (TypeError, ValueError):
             actual_platform_id_int = 0
-        if actual_platform_id_int and actual_platform_id_int != expected_platform_id:
+        if (
+            actual_platform_id_int
+            and actual_platform_id_int != expected_platform_id
+            and not _allow_cross_platform_promotion_for_current_line()
+        ):
             raise InbeidouError(
                 f"推广链接平台不匹配: 目标平台 {normalized_platform}，推广平台ID {actual_platform_id_int}"
             )

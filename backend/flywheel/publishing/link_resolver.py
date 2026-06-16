@@ -18,6 +18,24 @@ PUBLISH_TO_PROMOTION_PLATFORM = {
     "INSTAGRAM": 3,
     "YOUTUBE": 4,
 }
+PROMOTION_INTRO_LINE = "👇 Click the link below to watch the full episode!"
+
+
+def _compose_caption_with_intro(base_text: str, promotion_link: str) -> str:
+    intro = PROMOTION_INTRO_LINE
+    text = str(base_text or "").strip()
+    link = str(promotion_link or "").strip()
+    if text.startswith(intro):
+        return text
+    if text and link and link in text:
+        body = text
+    elif text and link:
+        body = f"{link}\n{text}"
+    else:
+        body = text or link
+    if not body:
+        return intro
+    return f"{intro}\n{body}"
 
 
 def build_placeholder_link(serial_id: str, agent_id: str) -> str:
@@ -60,7 +78,7 @@ def attach_links(plans: list[dict[str, Any]], drama_map: dict[str, dict[str, Any
         promotion_platform = PUBLISH_TO_PROMOTION_PLATFORM.get(publish_platform)
         if dry_run and not promotion_platform:
             updated["promotion_link"] = build_placeholder_link(str(plan.get("serial_id") or ""), str(plan.get("agent_id") or ""))
-            updated["caption"] = str(updated.get("promotion_link") or "")
+            updated["caption"] = _compose_caption_with_intro("", str(updated.get("promotion_link") or ""))
             updated["promotion_platform_id"] = ""
             updated["promote_code_content"] = ""
             enriched.append(updated)
@@ -88,9 +106,9 @@ def attach_links(plans: list[dict[str, Any]], drama_map: dict[str, dict[str, Any
             updated["promotion_code"] = link_entry.get("code") or ""
             updated["promotion_platform_id"] = str(promotion_platform or "")
             updated["promote_code_content"] = str(link_entry.get("promote_code_content") or "").strip()
-            updated["caption"] = (
-                str(link_entry.get("promote_code_content") or "").strip()
-                or str(updated.get("promotion_link") or "")
+            updated["caption"] = _compose_caption_with_intro(
+                str(link_entry.get("promote_code_content") or "").strip(),
+                str(updated.get("promotion_link") or ""),
             )
         else:
             anchor = history_payload.get("promotion_anchor") if isinstance(history_payload.get("promotion_anchor"), dict) else {}
@@ -118,9 +136,9 @@ def attach_links(plans: list[dict[str, Any]], drama_map: dict[str, dict[str, Any
                 updated["promotion_code"] = link_entry.get("code") or ""
                 updated["promotion_platform_id"] = str(promotion_platform or "")
                 updated["promote_code_content"] = str(link_entry.get("promote_code_content") or "").strip()
-                updated["caption"] = (
-                    str(link_entry.get("promote_code_content") or "").strip()
-                    or str(updated.get("promotion_link") or "")
+                updated["caption"] = _compose_caption_with_intro(
+                    str(link_entry.get("promote_code_content") or "").strip(),
+                    str(updated.get("promotion_link") or ""),
                 )
                 updated["promotion_anchor_used"] = True
                 updated["promotion_anchor_task_id"] = anchor_task_id
@@ -128,7 +146,7 @@ def attach_links(plans: list[dict[str, Any]], drama_map: dict[str, dict[str, Any
                 updated["promotion_link_mode"] = "anchor_app_link"
             else:
                 updated["promotion_link"] = build_placeholder_link(str(plan.get("serial_id") or ""), str(plan.get("agent_id") or ""))
-                updated["caption"] = str(updated.get("promotion_link") or "")
+                updated["caption"] = _compose_caption_with_intro("", str(updated.get("promotion_link") or ""))
                 updated["promotion_platform_id"] = str(promotion_platform or "")
                 updated["promote_code_content"] = ""
         enriched.append(updated)

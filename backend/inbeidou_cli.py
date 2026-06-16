@@ -3701,13 +3701,20 @@ def _promotion_text_from_result(result):
 
 
 def _compose_promotion_caption(base_text: str, promotion_link: str) -> str:
+    intro = "👇 Click the link below to watch the full episode!"
     text = str(base_text or "").strip()
     link = str(promotion_link or "").strip()
-    if text and link:
-        if link in text:
-            return text
-        return f"{text}\n{link}"
-    return text or link
+    if text.startswith(intro):
+        return text
+    if text and link and link in text:
+        body = text
+    elif text and link:
+        body = f"{link}\n{text}"
+    else:
+        body = text or link
+    if not body:
+        return intro
+    return f"{intro}\n{body}"
 
 
 def _normalize_frontend_promotion_text(raw_text: str) -> str:
@@ -3768,6 +3775,7 @@ def _novel_promotion_caption(novel: dict, publish_platform: str) -> dict[str, st
         raise InbeidouError(f"《{title}》未拿到可发布推广文案")
     promotion_code = str(link_entry.get("code") or "").strip()
     final_caption = _inject_novel_promo_code(caption, promotion_code)
+    final_caption = _compose_promotion_caption(final_caption, promotion_link)
     return {
         "raw_caption": caption,
         "title": str(link_entry.get("title") or title).strip(),

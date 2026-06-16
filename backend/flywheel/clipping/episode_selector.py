@@ -7,6 +7,7 @@ from typing import Any
 from inbeidou_cli import InbeidouError, get_episode_info, get_episode_list, require_success
 
 MAX_EPISODE_DETAIL_PROBES = 4
+YOURCHANNEL_DIRECT_EPISODE_PROBE_LIMIT = 8
 
 
 def _episode_order(row: dict[str, Any]) -> int:
@@ -98,6 +99,65 @@ def _episode_api_with_retries(loader, *, retry_count: int) -> Any:
     raise InbeidouError("剧集接口调用失败")
 
 
+def _supports_direct_episode_info_fallback(app_id: str) -> bool:
+    return str(app_id or "").strip().lower() == "yourchannel_drama"
+
+
+def select_direct_episode_info_episode(
+    serial_id: str | int,
+    app_id: str,
+    *,
+    retry_count: int = 0,
+) -> dict[str, Any]:
+    scored: list[dict[str, Any]] = []
+    errors: list[str] = []
+    total = YOURCHANNEL_DIRECT_EPISODE_PROBE_LIMIT
+    for order in range(1, total + 1):
+        try:
+            info = _episode_api_with_retries(
+                lambda order=order: require_success(
+                    get_episode_info(serial_id=int(serial_id), episode_order=order, app_id=str(app_id)),
+                    f"获取第 {order} 集详情",
+                ),
+                retry_count=retry_count,
+            )
+        except InbeidouError as exc:
+            errors.append(f"E{order}:{exc}")
+            continue
+        row = {
+            "episode_order": order,
+            "episode_id": info.get("id") or order,
+            "episode_name": info.get("chapter_name") or f"Episode {order}",
+            "play_url": info.get("play_url") or info.get("mp4_OD") or info.get("m3u8_HD") or "",
+            "duration": int(info.get("duration") or info.get("file_duration") or 0),
+        }
+        scored.append(_scored_episode(row, info, total=total))
+    scored.sort(key=lambda item: (float(item["final_score"]), -int(item["episode_order"])), reverse=True)
+    if scored and float(scored[0].get("availability_score") or 0) > 0:
+        selected = scored[0]
+        return {
+            "episode_order": int(selected["episode_order"]),
+            "episode_count": total,
+            "episode_id": selected.get("episode_id"),
+            "episode_name": selected.get("episode_name"),
+            "play_url": selected.get("play_url") or "",
+            "duration": int(selected.get("duration") or 0),
+            "selection_mode": "direct_episode_info_probe",
+            "reason": "sketch/list 不可用，已切换到 episode/info 直探测可播放 HLS/MP4 素材。",
+            "supported": True,
+            "candidates": scored[: min(10, len(scored))],
+        }
+    reason = " / ".join(errors[:3]) if errors else "episode_info_probe_failed"
+    return {
+        "episode_order": 1,
+        "episode_count": total,
+        "selection_mode": "direct_episode_info_probe",
+        "reason": reason,
+        "supported": False,
+        "candidates": scored[: min(10, len(scored))],
+    }
+
+
 def select_best_episode(serial_id: str | int, app_id: str, *, retry_count: int = 0) -> dict[str, Any]:
     try:
         rows = _episode_api_with_retries(
@@ -105,6 +165,14 @@ def select_best_episode(serial_id: str | int, app_id: str, *, retry_count: int =
             retry_count=retry_count,
         )
     except InbeidouError as exc:
+        if _supports_direct_episode_info_fallback(app_id):
+            fallback = select_direct_episode_info_episode(
+                serial_id,
+                app_id,
+                retry_count=retry_count,
+            )
+            if bool(fallback.get("supported")):
+                return fallback
         return {
             "episode_order": 1,
             "episode_count": 0,

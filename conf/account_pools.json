@@ -189,12 +189,12 @@
   },
   "facebook_drama_exception_pool": {
     "platform": "FACEBOOK",
-    "description": "短剧异常账号暂存池，连续 3 次不能发布 Reel 的账号移入这里。",
+    "description": "短剧异常账号暂存池，供人工复核其他异常账号使用。",
     "account_ids": []
   },
   "facebook_drama_reel_block_pool": {
     "platform": "FACEBOOK",
-    "description": "不能发布 Reel 的账号隔离池，记录来源线路后人工复核。",
+    "description": "不能发布 Reel 的账号隔离池，出现 1 次后立即移入并记录来源线路。",
     "account_ids": []
   },
   "facebook_drama_reserve_pool": {

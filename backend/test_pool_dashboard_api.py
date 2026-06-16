@@ -34,6 +34,14 @@ AI_LOOP_REPORTING_P0_SUMMARY_PATH = os.getenv(
     "AI_LOOP_REPORTING_P0_SUMMARY_PATH",
     "/opt/ai-loop-dashboard/runtime/p0-summary.json",
 ).strip()
+FIXED_BASELINE_CARD_VALUES = {
+    "全体每日播放平均": 133755.048,
+    "全体每日互动平均": 2886.143,
+    "全体每日发布平均": 3789.619,
+    "全体每日成功平均": 3057.524,
+    "全体每日点击平均": 2832.667,
+    "全体每日成功率均值": 76.83,
+}
 
 LINE_LABELS = {
     "ordinary": "普通池",
@@ -778,37 +786,37 @@ class TestPoolDashboardService:
         baseline_cards = [
             self._trend_metric_card(
                 label="全体每日播放平均",
-                value=avg("view_total", baseline_rows),
-                kind="integer",
+                value=FIXED_BASELINE_CARD_VALUES["全体每日播放平均"],
+                kind="number",
                 note=f"基线 {TREND_BASELINE_START} 至 {TREND_BASELINE_END} · 样本 {len(baseline_rows)} 天",
             ),
             self._trend_metric_card(
                 label="全体每日互动平均",
-                value=avg("interaction_total", baseline_rows),
-                kind="integer",
+                value=FIXED_BASELINE_CARD_VALUES["全体每日互动平均"],
+                kind="number",
                 note="点赞 + 评论 + 分享",
             ),
             self._trend_metric_card(
                 label="全体每日发布平均",
-                value=avg("publish_count", baseline_rows),
-                kind="integer",
+                value=FIXED_BASELINE_CARD_VALUES["全体每日发布平均"],
+                kind="number",
                 note="ai-loop-reporting 全体日汇总口径",
             ),
             self._trend_metric_card(
                 label="全体每日成功平均",
-                value=avg("success_count", baseline_rows),
-                kind="integer",
+                value=FIXED_BASELINE_CARD_VALUES["全体每日成功平均"],
+                kind="number",
                 note="当日发布成功数",
             ),
             self._trend_metric_card(
                 label="全体每日点击平均",
-                value=avg("click_total", baseline_rows),
-                kind="integer",
+                value=FIXED_BASELINE_CARD_VALUES["全体每日点击平均"],
+                kind="number",
                 note="推广链接点击次数",
             ),
             self._trend_metric_card(
                 label="全体每日成功率均值",
-                value=avg("success_rate", baseline_rows),
+                value=FIXED_BASELINE_CARD_VALUES["全体每日成功率均值"],
                 kind="percent",
                 note="成功数 / 发布数",
             ),
@@ -1789,37 +1797,37 @@ class TestPoolDashboardService:
         baseline_cards = [
             self._trend_metric_card(
                 label="全体每日播放平均",
-                value=avg("view_total", baseline_rows),
-                kind="integer",
+                value=FIXED_BASELINE_CARD_VALUES["全体每日播放平均"],
+                kind="number",
                 note=f"基线 {TREND_BASELINE_START} 至 {TREND_BASELINE_END} · 样本 {len(baseline_rows)} 天",
             ),
             self._trend_metric_card(
                 label="全体每日互动平均",
-                value=avg("interaction_total", baseline_rows),
-                kind="integer",
+                value=FIXED_BASELINE_CARD_VALUES["全体每日互动平均"],
+                kind="number",
                 note="点赞 + 评论 + 分享",
             ),
             self._trend_metric_card(
                 label="全体每日发布平均",
-                value=avg("publish_count", baseline_rows),
-                kind="integer",
+                value=FIXED_BASELINE_CARD_VALUES["全体每日发布平均"],
+                kind="number",
                 note="分析日报总体概览口径",
             ),
             self._trend_metric_card(
                 label="全体每日成功平均",
-                value=avg("success_count", baseline_rows),
-                kind="integer",
+                value=FIXED_BASELINE_CARD_VALUES["全体每日成功平均"],
+                kind="number",
                 note="当日发布成功数",
             ),
             self._trend_metric_card(
                 label="全体每日点击平均",
-                value=avg("click_total", baseline_rows),
-                kind="integer",
+                value=FIXED_BASELINE_CARD_VALUES["全体每日点击平均"],
+                kind="number",
                 note="推广链接点击次数",
             ),
             self._trend_metric_card(
                 label="全体每日成功率均值",
-                value=avg("success_rate", baseline_rows),
+                value=FIXED_BASELINE_CARD_VALUES["全体每日成功率均值"],
                 kind="percent",
                 note="成功数 / 发布数",
             ),
@@ -1968,6 +1976,37 @@ class TestPoolDashboardService:
             "trend_analyzer": self.get_trend_analyzer(refresh=False),
             "today_top_play": today_top_play,
             "daily_top_history": self.get_daily_top_play_history(force=False),
+        }
+
+    def get_realtime_overview(self, *, days: int = 30, include_today_top_play: bool = True) -> dict[str, Any]:
+        rounds = self._filtered_rounds(days=days)
+        last_exported_at = max((row.exported_at for row in rounds if row.exported_at), default="")
+        overall_summary = self._build_overall_summary(rounds)
+        loop_overview = self.get_loop_overview()
+        today_top_play = self.get_today_top_play(force=False) if include_today_top_play else None
+        requested = sum(row.requested_count for row in rounds)
+        success = sum(row.success_count for row in rounds)
+        failed = sum(row.failed_count for row in rounds)
+        processing = sum(row.processing_count for row in rounds)
+        unsubmitted = sum(row.unsubmitted_count for row in rounds)
+        all_days = sorted({row.day_key for row in rounds}, reverse=True)
+        return {
+            "db_path": str(self.runtime_root),
+            "window_days": days,
+            "last_exported_at": last_exported_at,
+            "kpis": {
+                "round_count": len(rounds),
+                "requested_count": requested,
+                "success_count": success,
+                "failed_count": failed,
+                "processing_count": processing,
+                "unsubmitted_count": unsubmitted,
+                "day_count": len(all_days),
+                "success_rate": round((success / requested) * 100, 2) if requested else 0.0,
+            },
+            "overall_summary": overall_summary,
+            "loop_overview": loop_overview,
+            "today_top_play": today_top_play,
         }
 
     def get_trends(self, *, days: int = 30) -> dict[str, Any]:

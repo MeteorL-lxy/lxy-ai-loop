@@ -48,6 +48,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     days=int(query.get("days", ["30"])[0]),
                     include_today_top_play=include_today_top_play,
                 )
+            elif parsed.path == "/api/test-pool/realtime-overview":
+                include_today_top_play = str(query.get("include_today_top_play", ["1"])[0]).strip().lower() not in {"0", "false", "no"}
+                payload = self.service.get_realtime_overview(
+                    days=int(query.get("days", ["30"])[0]),
+                    include_today_top_play=include_today_top_play,
+                )
             elif parsed.path == "/api/test-pool/loop-overview":
                 payload = {
                     "loop_overview": self.service.get_loop_overview(),
