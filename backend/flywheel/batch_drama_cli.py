@@ -26,7 +26,11 @@ from flywheel.clipping.ai_cut_animation import (
     DEFAULT_TEMPLATE_ID,
     DEFAULT_USE_AUTO_MIGRATION,
 )
-from flywheel.selection.realtime_rank_source import mark_realtime_hour_exhausted
+from flywheel.selection.realtime_rank_source import (
+    fetch_creative_list_candidates,
+    fetch_realtime_rank_candidates,
+    mark_realtime_hour_exhausted,
+)
 
 
 MODULE_ROOT_DIR = Path(__file__).resolve().parents[2]

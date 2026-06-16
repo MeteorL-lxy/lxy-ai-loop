@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -838,49 +839,108 @@ def fetch_creative_list_candidates(
     if not official_rows:
         return []
 
-    consumed = _creative_list_consumed_serial_ids(line_name=line_name, app_id=active_app_id)
-    candidates: list[dict[str, Any]] = []
-    touched_serial_ids: list[str] = []
+    state = _load_creative_list_state(line_name=line_name, app_id=active_app_id)
+    consumed = _creative_list_consumed_serial_ids(line_name=line_name, app_id=active_app_id, state=state)
+    cached_candidates = _creative_list_cached_candidates(state)
+    if len(cached_candidates) >= max(1, int(target_size or 0)):
+        selected = cached_candidates[: max(1, int(target_size or 0))]
+        _save_creative_list_state(
+            line_name=line_name,
+            app_id=active_app_id,
+            consumed_serial_ids=consumed,
+            cached_candidates=cached_candidates[len(selected) :],
+            scan_completed=bool(state.get("scan_completed")),
+        )
+        return selected
+
+    candidates: list[dict[str, Any]] = list(cached_candidates)
     timeout = _external_video_lookup_timeout(config.realtime_rank_timeout_seconds)
+    pending_rows: list[dict[str, Any]] = []
 
     for row in official_rows:
         serial_id = str(row.get("serial_id") or "").strip()
         if not serial_id or serial_id in consumed:
             continue
-        touched_serial_ids.append(serial_id)
         title = str(row.get("title") or row.get("title_ch") or row.get("title_en") or "").strip()
         if not title:
             continue
+        pending_rows.append(row)
+
+    remaining_rows = list(pending_rows)
+    batch_size = max(1, min(int(os.getenv("BARRY_CREATIVE_LIST_SCAN_BATCH_SIZE") or 120), len(remaining_rows)))
+    pending_rows = remaining_rows[:batch_size]
+    has_more_rows = len(remaining_rows) > len(pending_rows)
+    if not pending_rows:
+        if not candidates:
+            return []
+        selected = candidates[: max(1, int(target_size or 0))]
+        _save_creative_list_state(
+            line_name=line_name,
+            app_id=active_app_id,
+            consumed_serial_ids=consumed,
+            cached_candidates=candidates[len(selected) :],
+            scan_completed=True,
+        )
+        return selected
+
+    def _lookup(row: dict[str, Any]) -> tuple[str, str, list[dict[str, Any]], str]:
+        serial_id = str(row.get("serial_id") or "").strip()
+        title = str(row.get("title") or row.get("title_ch") or row.get("title_en") or "").strip()
         try:
             assets = _search_creative_list_assets(
                 title,
                 publish_platform=publish_platform,
                 timeout=timeout,
             )
+            return serial_id, title, assets, ""
         except Exception as exc:
-            _log_realtime_skip(f"创意列表匹配 {active_app_id} / {title} 失败，已跳过：{exc}")
-            continue
-        if not assets:
-            continue
-        first_asset = assets[0]
-        candidates.append(
-            _build_creative_list_candidate(
-                official_row=row,
-                app_id=active_app_id,
-                asset=first_asset,
-            )
-        )
+            return serial_id, title, [], str(exc)
 
-    if touched_serial_ids:
-        _mark_creative_list_official_rows_consumed(
-            line_name=line_name,
-            app_id=active_app_id,
-            serial_ids=touched_serial_ids,
+    max_workers = max(1, min(int(os.getenv("BARRY_CREATIVE_LIST_LOOKUP_CONCURRENCY") or 24), 24))
+    touched_serial_ids = [
+        str(row.get("serial_id") or "").strip()
+        for row in pending_rows
+        if str(row.get("serial_id") or "").strip()
+    ]
+    rows_by_serial = {str(row.get("serial_id") or "").strip(): row for row in pending_rows}
+    if pending_rows:
+        _log_realtime_skip(
+            f"创意列表 {active_app_id} 本轮分批扫描 {len(pending_rows)} 部剧，"
+            f"缓存候选={len(cached_candidates)}，并发={max_workers}，超时={int(timeout)}s"
         )
-    if not candidates:
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {executor.submit(_lookup, row): str(row.get("serial_id") or "").strip() for row in pending_rows}
+        for future in as_completed(future_map):
+            serial_id, title, assets, error = future.result()
+            if error:
+                _log_realtime_skip(f"创意列表匹配 {active_app_id} / {title} 失败，已跳过：{error}")
+                continue
+            if not assets:
+                continue
+            row = rows_by_serial.get(serial_id)
+            if not row:
+                continue
+            first_asset = assets[0]
+            candidates.append(
+                _build_creative_list_candidate(
+                    official_row=row,
+                    app_id=active_app_id,
+                    asset=first_asset,
+                )
+            )
+
+    updated_consumed = consumed | {item for item in touched_serial_ids if item}
+    selected = candidates[: max(1, int(target_size or 0))]
+    _save_creative_list_state(
+        line_name=line_name,
+        app_id=active_app_id,
+        consumed_serial_ids=updated_consumed,
+        cached_candidates=candidates[len(selected) :],
+        scan_completed=not has_more_rows,
+    )
+    if not selected:
         return []
-    max_candidates = max(int(target_size or 0), len(candidates))
-    return candidates[:max_candidates]
+    return selected
 
 
 def _creative_list_state_path(*, line_name: str, app_id: str) -> Path:
@@ -897,10 +957,18 @@ def _creative_list_active_app_id(*, line_name: str) -> str:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         payload = {}
+    current_app_id = str(payload.get("current_app_id") or payload.get("last_app_id") or "").strip().lower()
+    if current_app_id:
+        state = _load_creative_list_state(line_name=normalized_line, app_id=current_app_id)
+        cached_count = int(state.get("cached_candidate_count") or 0)
+        scan_completed = bool(state.get("scan_completed"))
+        if cached_count > 0 or not scan_completed:
+            return current_app_id
     index = int(payload.get("index") or 0)
     app_id = CREATIVE_LIST_ROTATION_APPS[index % len(CREATIVE_LIST_ROTATION_APPS)]
     next_payload = {
         "index": index + 1,
+        "current_app_id": app_id,
         "last_app_id": app_id,
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -908,28 +976,48 @@ def _creative_list_active_app_id(*, line_name: str) -> str:
     return app_id
 
 
-def _creative_list_consumed_serial_ids(*, line_name: str, app_id: str) -> set[str]:
+def _load_creative_list_state(*, line_name: str, app_id: str) -> dict[str, Any]:
     path = _creative_list_state_path(line_name=line_name, app_id=app_id)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return set()
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _creative_list_consumed_serial_ids(*, line_name: str, app_id: str, state: dict[str, Any] | None = None) -> set[str]:
+    payload = state if isinstance(state, dict) else _load_creative_list_state(line_name=line_name, app_id=app_id)
     values = payload.get("consumed_serial_ids")
     if not isinstance(values, list):
         return set()
     return {str(item).strip() for item in values if str(item).strip()}
 
 
-def _mark_creative_list_official_rows_consumed(*, line_name: str, app_id: str, serial_ids: list[str]) -> None:
+def _creative_list_cached_candidates(state: dict[str, Any]) -> list[dict[str, Any]]:
+    values = state.get("cached_candidates")
+    if not isinstance(values, list):
+        return []
+    return [dict(item) for item in values if isinstance(item, dict)]
+
+
+def _save_creative_list_state(
+    *,
+    line_name: str,
+    app_id: str,
+    consumed_serial_ids: set[str],
+    cached_candidates: list[dict[str, Any]],
+    scan_completed: bool,
+) -> None:
     path = _creative_list_state_path(line_name=line_name, app_id=app_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    existing = _creative_list_consumed_serial_ids(line_name=line_name, app_id=app_id)
-    updated = sorted(existing | {str(item).strip() for item in serial_ids if str(item).strip()})
     payload = {
         "app_id": app_id,
         "line_name": str(line_name or "creative_list").strip().lower() or "creative_list",
-        "consumed_serial_ids": updated,
-        "consumed_count": len(updated),
+        "consumed_serial_ids": sorted(consumed_serial_ids),
+        "consumed_count": len(consumed_serial_ids),
+        "cached_candidates": cached_candidates,
+        "cached_candidate_count": len(cached_candidates),
+        "scan_completed": bool(scan_completed),
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

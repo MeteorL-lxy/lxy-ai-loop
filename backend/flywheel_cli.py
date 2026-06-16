@@ -2590,19 +2590,37 @@ def _find_publish_record(*, platform: str, team_id: str, task_id: str) -> dict:
 def _poll_local_publish_records(*, platform: str, tasks: list[dict], wait_seconds: int, poll_interval: int) -> list[dict]:
     deadline = time.time() + max(0, wait_seconds)
     records: list[dict] = []
+    last_error = ""
     while True:
-        records = [
-            _find_publish_record(
-                platform=platform,
-                team_id=str(task.get("team_id") or ""),
-                task_id=str(task.get("task_id") or ""),
+        try:
+            records = [
+                _find_publish_record(
+                    platform=platform,
+                    team_id=str(task.get("team_id") or ""),
+                    task_id=str(task.get("task_id") or ""),
+                )
+                for task in tasks
+            ]
+        except Exception as exc:
+            last_error = str(exc).strip()
+            _emit_stderr_line(
+                f"[publish-record-poll] {platform} 发布记录查询失败，继续重试：{last_error}"
             )
-            for task in tasks
-        ]
+            if time.time() >= deadline:
+                _emit_stderr_line(
+                    f"[publish-record-poll] {platform} 发布记录查询超时收尾，保留空记录返回。"
+                )
+                return records
+            time.sleep(max(1, poll_interval))
+            continue
         statuses = [str(record.get("status") or task.get("status") or "") for record, task in zip(records, tasks)]
         if statuses and not any(status.upper() in RUNNING_PUBLISH_STATUSES for status in statuses):
             return records
         if time.time() >= deadline:
+            if last_error:
+                _emit_stderr_line(
+                    f"[publish-record-poll] {platform} 发布记录查询截止，最近错误：{last_error}"
+                )
             return records
         time.sleep(max(1, poll_interval))
 

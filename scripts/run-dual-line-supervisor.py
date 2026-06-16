@@ -188,6 +188,7 @@ def _spawn_line(name: str, config: dict[str, object]) -> subprocess.Popen[str]:
 
 def main() -> int:
     children: dict[str, subprocess.Popen[str]] = {}
+    completed: set[str] = set()
     stopping = False
 
     def _stop_children() -> None:
@@ -226,6 +227,8 @@ def main() -> int:
     while not stopping:
         time.sleep(5)
         for name, config in LINE_CONFIGS.items():
+            if name in completed:
+                continue
             proc = children.get(name)
             if proc is None:
                 continue
@@ -234,15 +237,26 @@ def main() -> int:
                 continue
             handle = getattr(proc, "_barry_log_handle", None)
             if handle:
-                handle.write(f"[{time.strftime('%F %T')}] line={name} exited code={code}; restart in 10s\n")
+                if code == 0:
+                    handle.write(f"[{time.strftime('%F %T')}] line={name} exited code=0; completed, no restart\n")
+                else:
+                    handle.write(f"[{time.strftime('%F %T')}] line={name} exited code={code}; restart in 10s\n")
                 handle.flush()
                 handle.close()
+            if code == 0:
+                completed.add(name)
+                children.pop(name, None)
+                _log(f"{name} worker 正常结束（code=0），视为已达标/已停止，不再重启。")
+                continue
             _log(f"{name} worker 退出（code={code}），10s 后拉起。")
             time.sleep(10)
             if stopping:
                 break
             children[name] = _spawn_line(name, config)
             _log(f"已重启 {name} worker，pid={children[name].pid}。")
+        if children and all(proc.poll() is not None for proc in children.values()):
+            _log("所有已启用 worker 均已结束。")
+            return 0
 
     _stop_children()
     return 0

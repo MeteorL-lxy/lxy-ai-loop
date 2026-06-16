@@ -55,6 +55,11 @@ def _is_realtime_rank_line(line_name: str) -> bool:
     return str(line_name or "").strip().lower() in {"realtime", "realtime_day", "realtime_single"}
 
 
+def _is_no_available_account_error(message: str) -> bool:
+    text = str(message or "").strip()
+    return "没有可用账号" in text or "可用账号不足" in text
+
+
 def _runtime_paths(line_name: str) -> tuple[str, Path, Path, Path]:
     day = datetime.now().strftime("%Y-%m-%d")
     state_root = Path(os.getenv("BARRY_LOOP_STATE_ROOT", str(ROOT_DIR / "runtime" / "continuous-loop"))).expanduser()
@@ -96,6 +101,20 @@ def _write_tracker_error(path: Path, *, stage: str, error: str) -> None:
         + "\n",
         encoding="utf-8",
     )
+
+
+def _json_file_has_payload(path: Path) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except Exception:
+        return False
+    if not text:
+        return False
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return False
+    return isinstance(payload, dict) and bool(payload)
 
 
 def _run_tracker_command(cmd: list[str], *, log_path: Path, stage: str, fallback_output: Path | None = None) -> bool:
@@ -193,6 +212,10 @@ def _push_tracker_artifacts(
     log_path: Path,
 ) -> None:
     if not _tracker_enabled(config):
+        return
+    if not _json_file_has_payload(json_path):
+        _write_tracker_error(tasks_path, stage="push_result", error="round json empty or not parseable; skip tracker push")
+        _log(f"tracker push_round_result 跳过：{json_path.name} 为空或不可解析。")
         return
     api_base = str(config.get("api_base") or "").strip()
     owner = str(config.get("owner") or "").strip()
@@ -429,6 +452,22 @@ def main() -> int:
                 allow_reuse=allow_reuse,
             )
         except Exception as exc:
+            if _is_no_available_account_error(str(exc)):
+                refreshed_status = get_pool_target_status(
+                    root_dir=ROOT_DIR,
+                    run_dir=run_dir,
+                    pool_name=pool_name,
+                    platform=platform,
+                    account_success_target=account_success_target,
+                )
+                refreshed_unmet = int(refreshed_status.get("unmet_account_count") or 0)
+                refreshed_deficit = int(refreshed_status.get("remaining_success_deficit") or 0)
+                if refreshed_unmet <= 0 and refreshed_deficit <= 0:
+                    _log(
+                        f"{line_name} 已达成账号目标并停止：账号池={pool_name}，账号日目标={account_success_target}，"
+                        f"可用账号已全部达标。"
+                    )
+                    return 0
             _log(f"{line_name} 选账号失败：{exc}；{error_sleep}s 后重试。")
             time.sleep(max(5, error_sleep))
             continue
