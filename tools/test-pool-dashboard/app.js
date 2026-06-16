@@ -37,14 +37,14 @@ const LINE_LABELS = {
 };
 
 const LINE_STRATEGIES = {
-  realtime_day: "白天手动线，优先发实时榜外部素材，窗口是 12:00-18:00。",
-  creative_list_day: "白天手动线，承接创意列表外部素材映射，窗口是 12:00-18:00。",
-  yourchannel: "白天剧场线，只发白名单剧名，走 YourChannel 剧场发布策略。",
-  realtime: "夜间实时榜线，优先吃实时榜外部素材，重点看榜单命中和回收。",
-  realtime_single: "夜间定账号线，单素材绑定单账号连续消耗，适合做更细的定向试跑。",
-  creative_list: "夜间创意映射线，承接外部素材映射到真实任务发布。",
-  ordinary: "夜间补量线，主要承接官方短剧稳定补量，保证底盘持续出量。",
-  fbhot_test: "夜间热测线，用来测试 FB 热度优先策略，不直接代表主线表现。",
+  realtime_day: "选素材：白天实时榜外部素材优先，先补当天榜单命中。\n如何剪辑：优先走外部素材快切，压缩成能快速发出的短视频。\n如何发布：白天手动窗口 12:00-18:00 内补量，重点看回收速度。",
+  creative_list_day: "选素材：从创意列表外部素材里挑能映射到真实任务的素材，优先承接白天补量。\n如何剪辑：先取外部素材，再按映射任务做快切和时长归一。\n如何发布：白天 12:00-18:00 手动窗口发，先看命中和回收。",
+  yourchannel: "选素材：只用白名单剧名，不混入其他实验素材。\n如何剪辑：直接按白名单剧目文案，走固定剧场发布节奏。\n如何发布：优先发 YourChannel 剧场，重点看剧目命中和账号达标率。",
+  realtime: "选素材：优先吃夜间实时榜外部素材，先看榜单里能直接跑的热剧。\n如何剪辑：外部素材优先快切，强调首屏节奏和快速出片。\n如何发布：夜间 18:00-次日12:00 连续补量，重点看播放回收和链接点击。",
+  realtime_single: "选素材：夜间实时榜里挑可连续消耗的素材，固定绑定到单账号。\n如何剪辑：同一素材反复试不同切法，方便观察单账号反馈。\n如何发布：按单账号连续发，适合看定向试跑和极值表现。",
+  creative_list: "选素材：创意列表外部素材先映射到真实任务，再筛能直接转发的版本。\n如何剪辑：优先走外部素材快切，保留创意素材的强钩子片段。\n如何发布：夜间稳定补量，重点看映射成功率和播放回收。",
+  ordinary: "选素材：官方短剧素材优先，承接夜间稳定补量和底盘出量。\n如何剪辑：按官方短剧正常剪辑逻辑发，重点保证稳定产出。\n如何发布：夜间持续补量，优先补足账号目标，不追求极端热度。",
+  fbhot_test: "选素材：偏热测素材，专门看 FB 热度优先策略是否值得放大。\n如何剪辑：强调首屏冲突和热点片段，方便测试热度反馈。\n如何发布：以实验为主，不直接代表主线，看点击、播放和收益反馈。",
 };
 
 function qs(id) {
@@ -282,16 +282,26 @@ function buildIssueMap(overview, failures) {
     const lineName = String(item.line_name || "").trim();
     const normalized = normalizeIssue(item.failure_reason || item.publish_status, item.title || "");
     if (!lineName || !isMeaningfulIssue(normalized)) return;
-    const list = issueMap.get(lineName) || [];
     const timeText = fmtDateTime(item.exported_at || item.day_key || todayKey);
-    const key = `${timeText}-${normalized}`;
-    if (!list.some((row) => row.key === key)) {
-      list.push({ key, timeText, text: normalized });
+    const bucket = issueMap.get(lineName) || new Map();
+    const existing = bucket.get(normalized);
+    if (existing) {
+      existing.count += 1;
+      if (timeText > existing.timeText) existing.timeText = timeText;
+    } else {
+      bucket.set(normalized, { text: normalized, timeText, count: 1 });
     }
-    issueMap.set(lineName, list);
+    issueMap.set(lineName, bucket);
   });
 
-  return issueMap;
+  const normalizedMap = new Map();
+  issueMap.forEach((bucket, lineName) => {
+    normalizedMap.set(
+      lineName,
+      [...bucket.values()].sort((a, b) => String(b.timeText).localeCompare(String(a.timeText)))
+    );
+  });
+  return normalizedMap;
 }
 
 function sortedLines(rows) {
@@ -321,11 +331,12 @@ function renderLineCards(overview, failures) {
     const statusText = row.is_running ? "运行中" : statusLabel(row.runtime_state);
     const remaining = Math.max(0, Number(row.target_total || 0) - Number(row.success_count || 0));
     const issues = issueMap.get(row.line_name) || [];
+    const strategyText = String(LINE_STRATEGIES[row.line_name] || row.pool_key || "-");
     const issueHtml = issues.length
       ? `<div class="issue-list">${issues.slice(0, 3).map((item) => `
           <div class="issue-item">
             <span class="issue-time">${esc(item.timeText)}</span>
-            <span>${esc(item.text)}</span>
+            <span>${esc(item.text)}${item.count > 1 ? `（${fmtNum(item.count)}次）` : ""}</span>
           </div>
         `).join("")}</div>`
       : `<div class="line-block-text">今天暂时没有明确问题，先继续看实时状态。</div>`;
@@ -373,7 +384,7 @@ function renderLineCards(overview, failures) {
         <div class="line-bottom">
           <div class="line-block">
             <div class="line-block-title">线路策略</div>
-            <div class="line-block-text">${esc(LINE_STRATEGIES[row.line_name] || row.pool_key || "-")}</div>
+            <div class="line-block-text">${esc(strategyText)}</div>
           </div>
           <div class="line-block">
             <div class="line-block-title">当天问题</div>
@@ -413,6 +424,96 @@ function renderTopPlay(overview) {
       <div class="top-play-copy">${esc(item.copy_text || item.description || "-")}</div>
     </article>
   `).join("");
+}
+
+function renderDailyTopHistory(overview) {
+  const payload = overview.daily_top_history || {};
+  const node = qs("daily-top-history-block");
+  const meta = qs("daily-history-meta");
+  meta.textContent = payload && payload.available
+    ? `${payload.start_day || "-"} 至 ${payload.end_day || "-"} ｜ 缓存更新 ${fmtDateTime(payload.updated_at)}`
+    : "从 2026-05-19 开始到昨天的每日最高播放样本";
+
+  if (!payload || !payload.available) {
+    node.innerHTML = `<div class="empty-state">${esc(payload?.note || "当前还没有可展示的每日最高播放样本。")}</div>`;
+    return;
+  }
+
+  const summaryCards = (payload.summary_cards || []).map((card) => {
+    const lines = Array.isArray(card.note_lines) ? card.note_lines : [];
+    const note = card.note ? `<div class="history-sample-note">${esc(card.note)}</div>` : "";
+    const metaRows = lines.length
+      ? `<div class="history-sample-meta">${lines.map((line) => `<div class="history-sample-meta-row">${esc(line)}</div>`).join("")}</div>`
+      : "";
+    return `
+      <article class="history-sample-card">
+        <div class="history-sample-label">${esc(card.label || "-")}</div>
+        <div class="history-sample-value">${esc(fmtTrendValue(card.value, card.kind))}</div>
+        ${note}
+        ${metaRows}
+      </article>
+    `;
+  }).join("");
+
+  const rows = payload.rows || [];
+  node.innerHTML = `
+    <div class="history-card-grid-sample">
+      ${summaryCards}
+    </div>
+    <div class="table-wrap history-table-wrap">
+      <table class="data-table daily-history-table">
+        <colgroup>
+          <col class="daily-col-day">
+          <col class="daily-col-metric">
+          <col class="daily-col-metric">
+          <col class="daily-col-metric">
+          <col class="daily-col-metric">
+          <col class="daily-col-line">
+          <col class="daily-col-copy">
+          <col class="daily-col-publish">
+        </colgroup>
+        <thead>
+          <tr>
+            <th>日期</th>
+            <th>播放</th>
+            <th>点击</th>
+            <th>收益</th>
+            <th>互动</th>
+            <th>线路 / 账号</th>
+            <th>发布文案</th>
+            <th>发布时间</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map((row) => `
+            <tr>
+              <td>${esc(row.day_key || "-")}</td>
+              <td><strong>${fmtNum(row.view_count)}</strong></td>
+              <td>${fmtNum(row.click_total)}</td>
+              <td>${fmtMoney(row.income_total)}</td>
+              <td>
+                ${fmtNum(row.interaction_total)}
+                <div class="table-sub">${fmtNum(row.like_count)} / ${fmtNum(row.comment_count)} / ${fmtNum(row.share_count)}</div>
+              </td>
+              <td>
+                <div>${esc(row.line_label || lineLabel(row.line_name))}</div>
+                <div class="table-sub">${esc(row.account_name || "-")}</div>
+              </td>
+              <td>
+                <div class="daily-copy-cell">
+                  <div class="daily-copy-scroll">${esc(row.copy_text || "-")}</div>
+                </div>
+              </td>
+              <td>
+                <div>${esc(fmtDateTime(row.published_at))}</div>
+                <div class="table-sub">${esc(row.metric_scope || "当天任务总口径")} · 点击 ${fmtNum(row.click_total)} · 收益 ${fmtMoney(row.income_total)}</div>
+              </td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
 }
 
 function fmtTrendValue(value, kind = "number") {
@@ -650,6 +751,7 @@ async function refreshAll({ forceRounds = false } = {}) {
     renderToday(overview);
     renderLineCards(overview, failures);
     renderTopPlay(overview);
+    renderDailyTopHistory(overview);
     renderHistory(overview);
     renderAccountGroups(overview.account_groups || []);
 

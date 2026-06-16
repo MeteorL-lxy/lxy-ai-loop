@@ -51,6 +51,35 @@ def _is_realtime_no_material_error(stderr_text: str) -> bool:
     )
 
 
+def _write_realtime_no_material_round_json(
+    *,
+    json_path: Path,
+    line_name: str,
+    round_name: str,
+    requested_count: int,
+    message: str,
+) -> None:
+    payload = {
+        "status": "no_realtime_material",
+        "mode": "continuous",
+        "platform": "FACEBOOK",
+        "line_name": line_name,
+        "round_name": round_name,
+        "requested_count": int(requested_count or 0),
+        "message": str(message or "").strip() or "实时榜当前没有可下载外部素材",
+        "items": [],
+        "publish_records": [],
+        "report_zh": {
+            "请求数量": int(requested_count or 0),
+            "计划数量": int(requested_count or 0),
+            "发布成功数": 0,
+            "失败数": 0,
+            "发布处理中数": 0,
+        },
+    }
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def _is_realtime_rank_line(line_name: str) -> bool:
     return str(line_name or "").strip().lower() in {"realtime", "realtime_day", "realtime_single"}
 
@@ -334,6 +363,12 @@ def _write_summary(
             requested = max(requested, requested_arg)
             planned = max(planned, requested_arg)
             unsubmitted = max(unsubmitted, requested_arg)
+        elif payload_status == "no_realtime_material":
+            status = "blocked"
+            status_label = "等待素材"
+            requested = max(requested, requested_arg)
+            planned = max(planned, requested_arg)
+            unsubmitted = max(unsubmitted, requested_arg)
         else:
             status = "error"
             status_label = "异常结束"
@@ -541,6 +576,20 @@ def main() -> int:
                 stderr=log_handle,
                 check=False,
             )
+        log_text = _read_log_tail_from_offset(log_path, log_offset)
+        realtime_no_material = (
+            _is_realtime_rank_line(line_name)
+            and realtime_no_material_sleep > 0
+            and _is_realtime_no_material_error(log_text)
+        )
+        if realtime_no_material and not _json_file_has_payload(json_path):
+            _write_realtime_no_material_round_json(
+                json_path=json_path,
+                line_name=line_name,
+                round_name=round_name,
+                requested_count=requested,
+                message="实时榜当前没有可下载外部素材；已等待下一小时重新拉取。",
+            )
         if proc.returncode != 0:
             _log(f"{label} 命令返回非零（rc={proc.returncode}），继续按结果文件汇总。")
         metrics = _write_summary(
@@ -560,12 +609,7 @@ def main() -> int:
             tasks_path=tasks_path,
             log_path=log_path,
         )
-        if (
-            _is_realtime_rank_line(line_name)
-            and realtime_no_material_sleep > 0
-            and proc.returncode != 0
-            and _is_realtime_no_material_error(_read_log_tail_from_offset(log_path, log_offset))
-        ):
+        if realtime_no_material:
             _log(
                 f"{label} 未拿到可用实时榜素材：等待 {realtime_no_material_sleep}s 后再拉取下一轮，不重置账号达标标签。"
             )

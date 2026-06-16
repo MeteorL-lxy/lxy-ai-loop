@@ -12,7 +12,9 @@ def is_vertical_publish_ready(*, metadata: dict[str, Any], target_width: int, ta
     height = int(metadata.get("screen_y") or 0)
     if width <= 0 or height <= 0:
         return False
-    return width * 16 == height * 9
+    if width * 16 != height * 9:
+        return False
+    return width >= int(target_width or 0) and height >= int(target_height or 0)
 
 
 def normalize_video_to_vertical(

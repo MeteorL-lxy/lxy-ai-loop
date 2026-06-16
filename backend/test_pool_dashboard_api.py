@@ -19,8 +19,10 @@ CONTINUOUS_ROOT = RUNTIME_ROOT / "continuous-loop"
 REPORT_CONTINUOUS_ROOT = RUNTIME_ROOT / "reports" / "continuous-test-summary"
 ACCOUNT_POOLS_PATH = ROOT_DIR / "conf" / "account_pools.json"
 ANALYSIS_REPORT_DIR = Path("/Users/xinyuliu/Downloads/AI Loop/分析日报")
+DAILY_TOP_HISTORY_CACHE_PATH = RUNTIME_ROOT / "dashboard-cache" / "daily_top_history.json"
 TREND_BASELINE_START = "2026-05-19"
 TREND_BASELINE_END = "2026-06-08"
+DAILY_TOP_HISTORY_START = "2026-05-19"
 
 LINE_LABELS = {
     "ordinary": "普通池",
@@ -302,6 +304,11 @@ def _json_load(path: Path) -> dict[str, Any]:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+def _json_dump(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _status_label(status: str) -> str:
@@ -1183,6 +1190,289 @@ class TestPoolDashboardService:
             "note": f"今天共回收 {total_count or len(items)} 条记录，总播放 {total_view}。",
         }
 
+    def get_daily_top_play_history(self, *, start_day: str = DAILY_TOP_HISTORY_START, force: bool = False) -> dict[str, Any]:
+        display_end_dt = date.today() - timedelta(days=1)
+        display_end_day = display_end_dt.isoformat()
+        cache_key = f"daily-top-play-history:{start_day}:{display_end_day}"
+
+        persisted = _json_load(DAILY_TOP_HISTORY_CACHE_PATH)
+        persisted_updated_at_raw = _text(persisted.get("updated_at"))
+        persisted_display_end_day = _text(persisted.get("display_end_day"))
+        try:
+            persisted_updated_at = datetime.fromisoformat(persisted_updated_at_raw) if persisted_updated_at_raw else None
+        except Exception:
+            persisted_updated_at = None
+
+        refresh_cutoff = datetime.now().replace(hour=10, minute=0, second=0, microsecond=0)
+        needs_daily_refresh = (
+            datetime.now() >= refresh_cutoff
+            and (
+                persisted_display_end_day != display_end_day
+                or persisted_updated_at is None
+                or persisted_updated_at < refresh_cutoff
+            )
+        )
+
+        force_refresh = force or needs_daily_refresh
+        if force_refresh:
+            self._remote_cache.pop(cache_key, None)
+        cached = self._get_cached_remote(cache_key)
+        if cached is not None and not force_refresh:
+            return cached
+
+        persisted_rows = persisted.get("rows") if isinstance(persisted.get("rows"), dict) else {}
+        cached_rows: dict[str, dict[str, Any]] = {
+            _text(day_key): dict(row)
+            for day_key, row in persisted_rows.items()
+            if isinstance(row, dict)
+        }
+        cache_changed = False
+
+        my_task_rows = self._fetch_all_my_task_rows(task_type="1")
+        task_metrics_map: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+        day_task_summary: dict[str, dict[str, Any]] = defaultdict(lambda: {
+            "click_total": 0,
+            "share_income_total": 0.0,
+            "ad_income_total": 0.0,
+            "income_total": 0.0,
+            "order_amount": 0.0,
+        })
+        for row in my_task_rows:
+            day_key = _text(row.get("actived_at"))[:10]
+            if not day_key or day_key < start_day:
+                continue
+            task_id = _text(row.get("task_id"))
+            if not task_id:
+                continue
+            platform_rows = row.get("platform_list") if isinstance(row.get("platform_list"), list) else []
+            facebook_row = next(
+                (
+                    item for item in platform_rows
+                    if isinstance(item, dict) and _safe_int(item.get("platform")) == 2
+                ),
+                {},
+            )
+            click_total = _safe_int(facebook_row.get("click_count"), _safe_int(row.get("click_count")))
+            share_income_total = round(
+                _safe_float(facebook_row.get("share_amount"), _safe_float(row.get("share_amount"))),
+                2,
+            )
+            ad_income_total = round(
+                _safe_float(facebook_row.get("ad_amount"), _safe_float(row.get("ad_amount"))),
+                2,
+            )
+            order_amount = round(
+                _safe_float(facebook_row.get("order_amount"), _safe_float(row.get("order_amount"))),
+                2,
+            )
+            day_task_summary[day_key]["click_total"] += click_total
+            day_task_summary[day_key]["share_income_total"] = round(
+                _safe_float(day_task_summary[day_key]["share_income_total"]) + share_income_total,
+                2,
+            )
+            day_task_summary[day_key]["ad_income_total"] = round(
+                _safe_float(day_task_summary[day_key]["ad_income_total"]) + ad_income_total,
+                2,
+            )
+            day_task_summary[day_key]["income_total"] = round(
+                _safe_float(day_task_summary[day_key]["income_total"]) + share_income_total,
+                2,
+            )
+            day_task_summary[day_key]["order_amount"] = round(
+                _safe_float(day_task_summary[day_key]["order_amount"]) + order_amount,
+                2,
+            )
+            task_metrics_map[day_key][task_id] = {
+                "click_total": click_total,
+                "share_income_total": share_income_total,
+                "ad_income_total": ad_income_total,
+                "income_total": round(share_income_total, 2),
+                "order_amount": order_amount,
+            }
+
+        account_line_map = self._build_account_line_map()
+        start_dt = date.fromisoformat(start_day)
+        end_dt = display_end_dt
+        rows: list[dict[str, Any]] = []
+        backfill_limit = 9999 if force_refresh else 6
+        backfill_used = 0
+        pending_backfill_days = 0
+
+        current = end_dt
+        while current >= start_dt:
+            day_key = current.isoformat()
+            cached_row = cached_rows.get(day_key) if isinstance(cached_rows.get(day_key), dict) else {}
+            use_cached = (
+                not force_refresh
+                and isinstance(cached_row, dict)
+                and _safe_int(cached_row.get("cache_version")) >= 1
+            )
+            if use_cached:
+                row_payload = dict(cached_row)
+            else:
+                if not force_refresh and backfill_used >= backfill_limit:
+                    pending_backfill_days += 1
+                    current -= timedelta(days=1)
+                    continue
+                backfill_used += 1
+                analysis_payload = self._fetch_publish_analysis_items(day_key=day_key)
+                raw_items = analysis_payload.get("items") if isinstance(analysis_payload.get("items"), list) else []
+                items = [item for item in raw_items if isinstance(item, dict)]
+                items.sort(
+                    key=lambda item: (
+                        -_safe_int(item.get("views")),
+                        -(_safe_int(item.get("likes")) + _safe_int(item.get("comments")) + _safe_int(item.get("shares"))),
+                        _text(item.get("post_date") or item.get("created_at")),
+                    )
+                )
+                top_item = next((item for item in items if _safe_int(item.get("views")) >= 0), None)
+                if top_item:
+                    task_id = _text(top_item.get("task_id"))
+                    matched_task = task_metrics_map.get(day_key, {}).get(task_id, {})
+                    day_summary = day_task_summary.get(day_key, {})
+                    line_name = account_line_map.get(_text(top_item.get("social_id")), "")
+                    matched_by_task = bool(matched_task)
+                    click_total = _safe_int(
+                        matched_task.get("click_total") if matched_by_task else day_summary.get("click_total")
+                    )
+                    share_income_total = round(
+                        _safe_float(
+                            matched_task.get("share_income_total") if matched_by_task else day_summary.get("share_income_total")
+                        ),
+                        2,
+                    )
+                    ad_income_total = round(
+                        _safe_float(
+                            matched_task.get("ad_income_total") if matched_by_task else day_summary.get("ad_income_total")
+                        ),
+                        2,
+                    )
+                    income_total = round(
+                        _safe_float(
+                            matched_task.get("income_total") if matched_by_task else day_summary.get("income_total")
+                        ),
+                        2,
+                    )
+                    order_amount = round(
+                        _safe_float(
+                            matched_task.get("order_amount") if matched_by_task else day_summary.get("order_amount")
+                        ),
+                        2,
+                    )
+                    row_payload = {
+                        "cache_version": 1,
+                        "day_key": day_key,
+                        "available": True,
+                        "task_id": task_id,
+                        "account_name": _text(top_item.get("social_name")) or "未知账号",
+                        "platform": _text(top_item.get("social_type") or "FACEBOOK") or "FACEBOOK",
+                        "line_name": line_name,
+                        "line_label": LINE_DISPLAY_NAMES.get(line_name) or "待识别线路",
+                        "view_count": _safe_int(top_item.get("views")),
+                        "click_total": click_total,
+                        "income_total": income_total,
+                        "share_income_total": share_income_total,
+                        "ad_income_total": ad_income_total,
+                        "order_amount": order_amount,
+                        "like_count": _safe_int(top_item.get("likes")),
+                        "comment_count": _safe_int(top_item.get("comments")),
+                        "share_count": _safe_int(top_item.get("shares")),
+                        "interaction_total": (
+                            _safe_int(top_item.get("likes"))
+                            + _safe_int(top_item.get("comments"))
+                            + _safe_int(top_item.get("shares"))
+                        ),
+                        "published_at": _text(top_item.get("post_date") or top_item.get("created_at")),
+                        "copy_text": _text(top_item.get("text")) or "-",
+                        "matched_task": matched_by_task,
+                        "metric_scope": "样本任务口径" if matched_by_task else "当天任务总口径",
+                    }
+                else:
+                    row_payload = {
+                        "cache_version": 1,
+                        "day_key": day_key,
+                        "available": False,
+                    }
+                cached_rows[day_key] = dict(row_payload)
+                cache_changed = True
+            if row_payload.get("available") and _safe_int(row_payload.get("view_count")) > 0:
+                rows.append(row_payload)
+            current -= timedelta(days=1)
+
+        if cache_changed:
+            _json_dump(
+                DAILY_TOP_HISTORY_CACHE_PATH,
+                {
+                    "updated_at": datetime.now().isoformat(timespec="seconds"),
+                    "display_end_day": display_end_day,
+                    "rows": cached_rows,
+                },
+            )
+
+        if not rows:
+            payload = {
+                "available": False,
+                "start_day": start_day,
+                "end_day": display_end_day,
+                "note": f"从 {start_day} 到 {display_end_day} 还没有拉到可展示的最高播放样本。",
+                "rows": [],
+                "summary_cards": [],
+            }
+            return self._set_cached_remote(cache_key, 120, payload)
+
+        rows.sort(key=lambda item: _text(item.get("day_key")), reverse=True)
+        peak_play = max(rows, key=lambda item: _safe_int(item.get("view_count")))
+        peak_click = max(rows, key=lambda item: _safe_int(item.get("click_total")))
+        peak_income = max(rows, key=lambda item: _safe_float(item.get("income_total")))
+
+        def build_peak_note(item: dict[str, Any], metric_name: str) -> list[str]:
+            scope = _text(item.get("metric_scope")) or "当天任务总口径"
+            source = f"{metric_name}来源：样本任务口径" if scope == "样本任务口径" else f"{metric_name}来源：当天 Facebook 任务总口径"
+            return [
+                f"日期：{_text(item.get('day_key')) or '-'}",
+                f"线路：{_text(item.get('line_label')) or '-'}",
+                f"账号：{_text(item.get('account_name')) or '-'}",
+                source,
+            ]
+
+        payload = {
+            "available": True,
+            "start_day": start_day,
+            "end_day": display_end_day,
+            "total_days": len(rows),
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "pending_backfill_days": pending_backfill_days,
+            "summary_cards": [
+                {
+                    "label": "有样本天数",
+                    "value": len(rows),
+                    "kind": "integer",
+                    "note": f"{start_day} 到 {display_end_day} 按天取播放最高的一条",
+                },
+                {
+                    "label": "单日最高播放峰值",
+                    "value": _safe_int(peak_play.get("view_count")),
+                    "kind": "integer",
+                    "note_lines": build_peak_note(peak_play, "播放"),
+                },
+                {
+                    "label": "单日最高点击",
+                    "value": _safe_int(peak_click.get("click_total")),
+                    "kind": "integer",
+                    "note_lines": build_peak_note(peak_click, "点击"),
+                },
+                {
+                    "label": "单日最高收益",
+                    "value": round(_safe_float(peak_income.get("income_total")), 2),
+                    "kind": "money",
+                    "note_lines": build_peak_note(peak_income, "收益"),
+                },
+            ],
+            "rows": rows,
+            "note": f"还有 {pending_backfill_days} 天历史样本待补拉。" if pending_backfill_days > 0 else "",
+        }
+        return self._set_cached_remote(cache_key, 300, payload)
+
     def get_weekly_effect(self, *, days: int = 7, force: bool = False) -> dict[str, Any]:
         return {
             "available": False,
@@ -1415,6 +1705,7 @@ class TestPoolDashboardService:
             "historical_daily_report": historical_daily_report,
             "trend_analyzer": self.get_trend_analyzer(refresh=False),
             "today_top_play": today_top_play,
+            "daily_top_history": self.get_daily_top_play_history(force=False),
         }
 
     def get_trends(self, *, days: int = 30) -> dict[str, Any]:

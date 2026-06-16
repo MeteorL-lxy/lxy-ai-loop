@@ -10,6 +10,8 @@ MAX_PUBLISH_FILE_SIZE_BYTES = 400 * 1024 * 1024
 MIN_SOURCE_DURATION_SECONDS = 30
 MAX_SOURCE_DURATION_SECONDS = 900
 MAX_PUBLISH_DURATION_SECONDS = 8 * 60
+MIN_PUBLISH_WIDTH = 720
+MIN_PUBLISH_HEIGHT = 720
 
 PUBLISH_TO_PROMOTION_PLATFORM = {
     "TIKTOK": 1,
@@ -115,6 +117,12 @@ def validate_publish_clip_constraints(clip: dict[str, Any] | None) -> dict[str, 
             if duration > MAX_PUBLISH_DURATION_SECONDS:
                 raise InbeidouError(
                     f"{label}时长超出限制: {duration}s，要求不超过 {MAX_PUBLISH_DURATION_SECONDS}s"
+                )
+            width = _meta_int(meta, "screen_x")
+            height = _meta_int(meta, "screen_y")
+            if width < MIN_PUBLISH_WIDTH or height < MIN_PUBLISH_HEIGHT:
+                raise InbeidouError(
+                    f"{label}分辨率过低: {width}x{height}，要求宽高至少 {MIN_PUBLISH_WIDTH}px"
                 )
         results[meta_key] = dict(meta)
     return results

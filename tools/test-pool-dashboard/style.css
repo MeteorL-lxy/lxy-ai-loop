@@ -248,7 +248,8 @@ body {
 .line-scroll::-webkit-scrollbar,
 .top-play-scroll::-webkit-scrollbar,
 .table-wrap::-webkit-scrollbar,
-.line-block-text::-webkit-scrollbar {
+.line-block-text::-webkit-scrollbar,
+.issue-list::-webkit-scrollbar {
   height: 8px;
   width: 8px;
 }
@@ -256,7 +257,8 @@ body {
 .line-scroll::-webkit-scrollbar-thumb,
 .top-play-scroll::-webkit-scrollbar-thumb,
 .table-wrap::-webkit-scrollbar-thumb,
-.line-block-text::-webkit-scrollbar-thumb {
+.line-block-text::-webkit-scrollbar-thumb,
+.issue-list::-webkit-scrollbar-thumb {
   background: #c5d3ec;
   border-radius: 999px;
 }
@@ -478,6 +480,9 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .issue-item {
@@ -677,6 +682,84 @@ body {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.history-card-grid-sample {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.9fr) repeat(3, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.history-sample-card {
+  min-width: 0;
+  padding: 18px;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.history-sample-label {
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.history-sample-value {
+  margin-top: 10px;
+  font-size: 34px;
+  line-height: 1.05;
+  font-weight: 900;
+  color: var(--text);
+}
+
+.history-sample-note {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.history-sample-meta {
+  margin-top: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.history-sample-meta-row {
+  padding-top: 8px;
+  border-top: 1px dashed #d5e0f2;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.history-table-wrap {
+  margin-top: 16px;
+}
+
+.daily-history-table {
+  min-width: 1380px;
+}
+
+.daily-col-day {
+  width: 104px;
+}
+
+.daily-col-metric {
+  width: 92px;
+}
+
+.daily-col-line {
+  width: 190px;
+}
+
+.daily-col-copy {
+  width: 420px;
+}
+
+.daily-col-publish {
+  width: 250px;
+}
+
 .history-metric-card {
   padding: 16px 18px;
   border-radius: 18px;
@@ -776,6 +859,51 @@ body {
 
 .data-table tr:last-child td {
   border-bottom: none;
+}
+
+.table-sub {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.daily-copy-cell {
+  display: block;
+  width: 100%;
+}
+
+.daily-copy-scroll {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  max-height: 48px;
+  padding: 0 0 8px;
+  border-bottom: 1px dashed #c9d7ef;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(94, 126, 255, 0.45) transparent;
+}
+
+.daily-copy-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.daily-copy-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.daily-copy-scroll::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(94, 126, 255, 0.42);
 }
 
 .note-cell {
@@ -915,6 +1043,7 @@ body {
   }
 
   .history-card-grid,
+  .history-card-grid-sample,
   .history-card-grid.compact,
   .line-bottom,
   .detail-grid {
@@ -942,6 +1071,7 @@ body {
   .line-stats,
   .top-play-metrics,
   .line-bottom,
+  .history-card-grid-sample,
   .history-card-grid,
   .history-card-grid.compact,
   .detail-grid,
