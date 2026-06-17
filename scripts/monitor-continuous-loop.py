@@ -22,6 +22,7 @@ LINE_ORDER = [
     "ordinary",
     "fbhot_test",
     "yourchannel",
+    "recent_order",
 ]
 LINE_PATTERN = "|".join(LINE_ORDER)
 

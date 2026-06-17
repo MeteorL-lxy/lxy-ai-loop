@@ -62,6 +62,10 @@ export BARRY_LOOP_YOURCHANNEL_ENABLED="${BARRY_LOOP_YOURCHANNEL_ENABLED:-0}"
 export BARRY_LOOP_YOURCHANNEL_ACCOUNT_POOL="${BARRY_LOOP_YOURCHANNEL_ACCOUNT_POOL:-facebook_drama_yourchannel_pool}"
 export BARRY_LOOP_YOURCHANNEL_COUNT="${BARRY_LOOP_YOURCHANNEL_COUNT:-0}"
 export BARRY_LOOP_YOURCHANNEL_FLYWHEEL_CONFIG="${BARRY_LOOP_YOURCHANNEL_FLYWHEEL_CONFIG:-conf/flywheel_yourchannel.yaml}"
+export BARRY_LOOP_RECENT_ORDER_ENABLED="${BARRY_LOOP_RECENT_ORDER_ENABLED:-0}"
+export BARRY_LOOP_RECENT_ORDER_ACCOUNT_POOL="${BARRY_LOOP_RECENT_ORDER_ACCOUNT_POOL:-facebook_drama_recent_order_pool}"
+export BARRY_LOOP_RECENT_ORDER_COUNT="${BARRY_LOOP_RECENT_ORDER_COUNT:-0}"
+export BARRY_LOOP_RECENT_ORDER_FLYWHEEL_CONFIG="${BARRY_LOOP_RECENT_ORDER_FLYWHEEL_CONFIG:-conf/flywheel_recent_order.yaml}"
 export BARRY_LOOP_REALTIME_FLYWHEEL_CONFIG="${BARRY_LOOP_REALTIME_FLYWHEEL_CONFIG:-}"
 export BARRY_LOOP_ORDINARY_FLYWHEEL_CONFIG="${BARRY_LOOP_ORDINARY_FLYWHEEL_CONFIG:-}"
 export BARRY_LOOP_DATE_ROLLOVER_RESET_ENABLED="${BARRY_LOOP_DATE_ROLLOVER_RESET_ENABLED:-1}"
@@ -84,7 +88,7 @@ from flywheel.daily_loop_targets import reset_success_target_window
 state_root = Path((ROOT_DIR / "runtime" / "continuous-loop")).resolve()
 day = datetime.now().strftime("%Y-%m-%d")
 
-for line_name in ("realtime", "realtime_single", "realtime_day", "creative_list", "creative_list_day", "ordinary", "fbhot_test", "yourchannel"):
+for line_name in ("realtime", "realtime_single", "realtime_day", "creative_list", "creative_list_day", "ordinary", "fbhot_test", "yourchannel", "recent_order"):
     run_dir = state_root / day / line_name
     payload = reset_success_target_window(run_dir)
     print(

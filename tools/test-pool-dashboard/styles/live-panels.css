@@ -1,0 +1,384 @@
+.line-scroll,
+.top-play-scroll {
+  display: flex;
+  gap: 16px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 6px;
+  scroll-snap-type: x proximity;
+}
+
+.line-scroll::-webkit-scrollbar,
+.top-play-scroll::-webkit-scrollbar,
+.table-wrap::-webkit-scrollbar,
+.line-block-text::-webkit-scrollbar,
+.issue-list::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+
+.line-scroll::-webkit-scrollbar-thumb,
+.top-play-scroll::-webkit-scrollbar-thumb,
+.table-wrap::-webkit-scrollbar-thumb,
+.line-block-text::-webkit-scrollbar-thumb,
+.issue-list::-webkit-scrollbar-thumb {
+  background: #c5d3ec;
+  border-radius: 999px;
+}
+
+.line-card,
+.top-play-card {
+  flex: 0 0 440px;
+  scroll-snap-align: start;
+}
+
+.line-card {
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%);
+}
+
+.line-card-head {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 14px;
+  align-items: start;
+}
+
+.line-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.line-title-row h3 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 74px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #fff;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.status-pill.running {
+  color: var(--green);
+  background: var(--green-soft);
+  border-color: #bce7cf;
+}
+
+.status-pill.done {
+  color: var(--blue);
+  background: var(--blue-soft);
+  border-color: #cfdcff;
+}
+
+.status-pill.error {
+  color: var(--red);
+  background: var(--red-soft);
+  border-color: #f6caca;
+}
+
+.status-pill.idle {
+  color: var(--muted);
+  background: var(--gray-soft);
+}
+
+.line-meta {
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.line-meta-pills {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.meta-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #fff;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.score-box {
+  width: 86px;
+  border-radius: 24px;
+  padding: 10px 0 8px;
+  text-align: center;
+  color: #fff;
+  background: linear-gradient(180deg, #db969c 0%, #ca7f86 100%);
+}
+
+.score-box strong {
+  display: block;
+  font-size: 18px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.score-box span {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+}
+
+.line-section-title,
+.top-play-copy-title {
+  margin: 18px 0 10px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.line-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.mini-stat {
+  padding: 14px 14px 12px;
+}
+
+.mini-stat span {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.mini-stat strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.progress-block {
+  margin-top: 16px;
+}
+
+.progress-row {
+  display: grid;
+  grid-template-columns: 78px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  margin-top: 10px;
+  font-size: 13px;
+}
+
+.progress-row strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.progress-bar {
+  position: relative;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #e7edf8;
+}
+
+.progress-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--blue), #7e94ff);
+}
+
+.progress-bar.progress-bar-green i {
+  background: linear-gradient(90deg, #7bc89d, #53b987);
+}
+
+.line-bottom {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.line-block {
+  padding: 14px;
+}
+
+.line-block-title {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--muted);
+}
+
+.line-block-text {
+  margin-top: 8px;
+  max-height: 126px;
+  overflow: auto;
+  font-size: 14px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.strategy-block {
+  display: grid;
+  gap: 10px;
+}
+
+.strategy-row {
+  display: grid;
+  grid-template-columns: 60px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.strategy-k {
+  font-size: 13px;
+  font-weight: 900;
+  color: var(--text);
+}
+
+.strategy-v {
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.issue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.issue-item {
+  padding: 10px 12px;
+}
+
+.issue-time {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--muted);
+}
+
+.issue-text {
+  display: block;
+  font-size: 13px;
+  line-height: 1.55;
+  font-weight: 700;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.top-play-card {
+  padding: 18px;
+}
+
+.top-rank {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: var(--blue-soft);
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.top-play-card h3 {
+  margin: 12px 0 0;
+  font-size: 18px;
+  font-weight: 900;
+  line-height: 1.45;
+}
+
+.top-play-meta {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.top-play-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.top-play-metrics div {
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: var(--surface-soft);
+}
+
+.top-play-metrics span {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.top-play-metrics strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.tag-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.line-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.top-play-copy {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: var(--surface-soft);
+  font-size: 14px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 124px;
+  overflow: auto;
+}

@@ -633,31 +633,15 @@ def _maybe_push_feishu_test_report(payload: dict[str, object]) -> dict[str, obje
     if mode == "local_video" and not _feishu_local_video_push_enabled():
         return {}
     if mode == "batch_drama":
-        report = payload.get("report_zh") if isinstance(payload.get("report_zh"), dict) else {}
-        requested = int(payload.get("requested_count") or report.get("请求数量") or report.get("计划数量") or 0)
-        details = report.get("任务明细") if isinstance(report.get("任务明细"), list) else []
-        success = int(report.get("发布成功数") or 0)
-        failed = int(report.get("失败数") or 0)
-        processing = int(report.get("发布处理中数") or 0)
-        safety = report.get("安全门槛") if isinstance(report.get("安全门槛"), dict) else {}
-        safety_rejected = int(safety.get("拦截数") or 0)
-        safety_replaced = int(safety.get("补位成功数") or 0)
-        if (
-            requested <= 0
-            and success <= 0
-            and failed <= 0
-            and processing <= 0
-            and safety_rejected <= 0
-            and safety_replaced <= 0
-            and not details
-        ):
-            return {
-                "test_feishu_push": {
-                    "enabled": True,
-                    "skipped": True,
-                    "reason": "empty_batch_report",
-                }
+        # 短剧 loop 改为仅保留本地/归档报告，不再向飞书推送单轮批量发布报告，
+        # 避免白天/夜间多线路运行时持续刷屏。
+        return {
+            "test_feishu_push": {
+                "enabled": False,
+                "skipped": True,
+                "reason": "batch_drama_push_disabled",
             }
+        }
     if not isinstance(payload.get("test_report_files"), dict):
         return {}
     files = payload.get("test_report_files") if isinstance(payload.get("test_report_files"), dict) else {}

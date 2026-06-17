@@ -26,6 +26,7 @@ ACCOUNT_POOLS_PATH = ROOT_DIR / "conf" / "account_pools.json"
 ANALYSIS_REPORT_DIR = Path("/Users/xinyuliu/Downloads/AI Loop/分析日报")
 DAILY_TOP_HISTORY_CACHE_PATH = RUNTIME_ROOT / "dashboard-cache" / "daily_top_history.json"
 SUMMARY_METRICS_CACHE_PATH = RUNTIME_ROOT / "dashboard-cache" / "summary_metrics.json"
+TREND_ANALYZER_CACHE_PATH = RUNTIME_ROOT / "dashboard-cache" / "trend_analyzer.json"
 TREND_BASELINE_START = "2026-05-19"
 TREND_BASELINE_END = "2026-06-08"
 TREND_RUNNING_START = "2026-06-09"
@@ -55,6 +56,7 @@ LINE_LABELS = {
     "creative_list_day": "白天创意列表映射",
     "realtime_single": "实时榜定账号",
     "yourchannel": "YourChannel",
+    "recent_order": "近月出单剧",
 }
 
 LINE_POOL_KEYS = {
@@ -66,6 +68,7 @@ LINE_POOL_KEYS = {
     "ordinary": "facebook_drama_ordinary_pool",
     "fbhot_test": "facebook_drama_fbhot_test_pool",
     "yourchannel": "facebook_drama_yourchannel_pool",
+    "recent_order": "facebook_drama_recent_order_pool",
 }
 
 ACCOUNT_GROUP_META = {
@@ -101,6 +104,10 @@ ACCOUNT_GROUP_META = {
         "label": "YourChannel 剧场线账号池",
         "description": "YourChannel 剧场线专用池，使用白名单剧名和剧场发布策略。",
     },
+    "facebook_drama_recent_order_pool": {
+        "label": "近月出单剧账号池",
+        "description": "夜间近月出单剧线专用池，按表格轮转剧名并使用官方视频 FFmpeg 30 秒快切。",
+    },
     "facebook_drama_reel_block_pool": {
         "label": "Reel 限制账号池",
         "description": "连续 5 次出现“不能发布 Reel 视频”后自动迁入，具体来源线路记录在 reel_publish_block_state 中。",
@@ -128,6 +135,7 @@ LINE_DISPLAY_NAMES = {
     "creative_list_day": "白天创意列表外部素材映射线",
     "fbhot_test": "FB 热度加权线",
     "yourchannel": "YourChannel 剧场线",
+    "recent_order": "近月出单剧线",
 }
 
 FINAL_SUCCESS_PREFIXES = ("published",)
@@ -255,6 +263,8 @@ def _line_clip_method(line_name: str) -> str:
         return "官方短剧补量"
     if normalized == "yourchannel":
         return "剧场白名单发布"
+    if normalized == "recent_order":
+        return "近月出单剧快切"
     return ""
 
 
@@ -581,12 +591,18 @@ def _parse_live_line_runtime(line_name: str, *, day_key: str) -> dict[str, Any]:
 
     latest_heartbeat_stage = ""
     latest_heartbeat_at = ""
+    latest_heartbeat_age_seconds: float | None = None
     if worker_log.exists():
         for raw_line in reversed(worker_lines):
             match = HEARTBEAT_RE.match(raw_line)
             if match:
                 latest_heartbeat_stage = match.group("stage")
-                latest_heartbeat_at = datetime.fromtimestamp(worker_log.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                worker_mtime = datetime.fromtimestamp(worker_log.stat().st_mtime)
+                latest_heartbeat_at = worker_mtime.strftime("%Y-%m-%d %H:%M:%S")
+                latest_heartbeat_age_seconds = max(
+                    0.0,
+                    (datetime.now() - worker_mtime).total_seconds(),
+                )
                 break
 
     is_active_round = False
@@ -603,6 +619,14 @@ def _parse_live_line_runtime(line_name: str, *, day_key: str) -> dict[str, Any]:
             is_active_round = False
 
     if is_active_round:
+        if latest_heartbeat_age_seconds is not None and latest_heartbeat_age_seconds > 180:
+            return {
+                "is_running": False,
+                "runtime_state": "阻塞",
+                "last_update": latest_heartbeat_at or active_since,
+                "latest_round": active_round_name,
+                "live_stage": f"{latest_heartbeat_stage or '执行中'}；超过 3 分钟没有新心跳",
+            }
         return {
             "is_running": True,
             "runtime_state": "运行中",
@@ -991,6 +1015,11 @@ class TestPoolDashboardService:
             compare_card("成功率", "success_rate", "percent"),
         ]
         running_label_suffix = latest_day or "前一天"
+        running_average_title = (
+            f"从 {TREND_RUNNING_START} 到 {latest_day} 的均值"
+            if latest_day and latest_day >= TREND_RUNNING_START
+            else f"从 {TREND_RUNNING_START} 到前一天的均值"
+        )
         running_average_cards = [
             self._trend_metric_card(
                 label=f"6月9号到{running_label_suffix}平均播放",
@@ -1025,12 +1054,14 @@ class TestPoolDashboardService:
             "baseline_end": TREND_BASELINE_END,
             "baseline_days": len(baseline_rows),
             "latest_day": latest_day,
+            "previous_day": previous_day,
             "latest_generated_at": _text(payload.get("generated_at")),
             "latest_summary": _text(payload.get("data_freshness", {}).get("policy") if isinstance(payload.get("data_freshness"), dict) else ""),
             "latest_file_name": "p0-summary.json",
             "latest_note": f"基于 ai-loop-reporting 全体汇总，统计截止 {latest_day}",
             "baseline_cards": baseline_cards,
             "compare_cards": compare_cards,
+            "running_average_title": running_average_title,
             "running_average_cards": running_average_cards,
             "daily_rows": daily_rows,
         }
@@ -2102,15 +2133,61 @@ class TestPoolDashboardService:
         }
 
     def get_trend_analyzer(self, *, refresh: bool = False) -> dict[str, Any]:
-        if refresh:
+        display_end_day = _yesterday_key()
+        cache_key = f"trend-analyzer:{display_end_day}"
+        persisted = _json_load(TREND_ANALYZER_CACHE_PATH)
+        persisted_updated_at_raw = _text(persisted.get("updated_at"))
+        persisted_display_end_day = _text(persisted.get("display_end_day"))
+        persisted_payload = persisted.get("payload") if isinstance(persisted.get("payload"), dict) else {}
+        try:
+            persisted_updated_at = datetime.fromisoformat(persisted_updated_at_raw) if persisted_updated_at_raw else None
+        except Exception:
+            persisted_updated_at = None
+
+        refresh_cutoff = datetime.now().replace(hour=10, minute=0, second=0, microsecond=0)
+        needs_daily_refresh = (
+            datetime.now() >= refresh_cutoff
+            and (
+                persisted_display_end_day != display_end_day
+                or persisted_updated_at is None
+                or persisted_updated_at < refresh_cutoff
+            )
+        )
+        force_refresh = refresh or needs_daily_refresh
+
+        if force_refresh:
+            self._remote_cache.pop(cache_key, None)
             self._remote_cache.pop("analysis-report-rows", None)
             self._remote_cache.pop("ai-loop-reporting-p0-summary", None)
+        cached = self._get_cached_remote(cache_key)
+        if cached is not None and not force_refresh:
+            return cached
+        if (
+            not force_refresh
+            and persisted_display_end_day == display_end_day
+            and persisted_payload
+        ):
+            return self._set_cached_remote(cache_key, 300, persisted_payload)
 
         remote_payload = self._load_ai_loop_reporting_summary(refresh=refresh)
         if remote_payload.get("available") is not False:
             remote_trend = self._build_trend_analyzer_from_ai_loop_reporting(remote_payload)
             if remote_trend.get("available"):
-                return remote_trend
+                _json_dump(
+                    TREND_ANALYZER_CACHE_PATH,
+                    {
+                        "updated_at": datetime.now().isoformat(timespec="seconds"),
+                        "display_end_day": display_end_day,
+                        "payload": remote_trend,
+                    },
+                )
+                return self._set_cached_remote(cache_key, 300, remote_trend)
+
+        if (
+            persisted_display_end_day == display_end_day
+            and persisted_payload
+        ):
+            return self._set_cached_remote(cache_key, 300, persisted_payload)
 
         rows = self._load_analysis_report_rows()
         if not rows:
@@ -2205,33 +2282,42 @@ class TestPoolDashboardService:
             compare_card("点击", "click_total"),
             compare_card("成功率", "success_rate", "percent"),
         ]
-        running_label_suffix = latest_day or "前一天"
-        running_average_cards = [
-            self._trend_metric_card(
-                label=f"6月9号到{running_label_suffix}平均播放",
-                value=avg("view_total", running_rows),
-                kind="integer",
-                note=f"{TREND_RUNNING_START} 至 {latest_day} · 样本 {len(running_rows)} 天",
-            ),
-            self._trend_metric_card(
-                label=f"6月9号到{running_label_suffix}平均互动",
-                value=avg("interaction_total", running_rows),
-                kind="integer",
-                note="点赞 + 评论 + 分享",
-            ),
-            self._trend_metric_card(
-                label=f"6月9号到{running_label_suffix}平均发布",
-                value=avg("publish_count", running_rows),
-                kind="integer",
-                note="总体概览日报口径",
-            ),
-            self._trend_metric_card(
-                label=f"6月9号到{running_label_suffix}平均点击",
-                value=avg("click_total", running_rows),
-                kind="integer",
-                note="推广链接点击次数",
-            ),
-        ]
+        has_running_window = bool(latest_day and latest_day >= TREND_RUNNING_START)
+        running_average_title = (
+            f"从 {TREND_RUNNING_START} 到 {latest_day} 的均值"
+            if has_running_window
+            else f"从 {TREND_RUNNING_START} 到前一天的均值"
+        )
+        if has_running_window:
+            running_label_suffix = latest_day or "前一天"
+            running_average_cards = [
+                self._trend_metric_card(
+                    label=f"6月9号到{running_label_suffix}平均播放",
+                    value=avg("view_total", running_rows),
+                    kind="integer",
+                    note=f"{TREND_RUNNING_START} 至 {latest_day} · 样本 {len(running_rows)} 天",
+                ),
+                self._trend_metric_card(
+                    label=f"6月9号到{running_label_suffix}平均互动",
+                    value=avg("interaction_total", running_rows),
+                    kind="integer",
+                    note="点赞 + 评论 + 分享",
+                ),
+                self._trend_metric_card(
+                    label=f"6月9号到{running_label_suffix}平均发布",
+                    value=avg("publish_count", running_rows),
+                    kind="integer",
+                    note="总体概览日报口径",
+                ),
+                self._trend_metric_card(
+                    label=f"6月9号到{running_label_suffix}平均点击",
+                    value=avg("click_total", running_rows),
+                    kind="integer",
+                    note="推广链接点击次数",
+                ),
+            ]
+        else:
+            running_average_cards = []
         daily_rows = [
             {
                 "day": _text(row.get("report_day")),
@@ -2252,14 +2338,21 @@ class TestPoolDashboardService:
             "baseline_end": TREND_BASELINE_END,
             "baseline_days": len(baseline_rows),
             "latest_day": latest_day,
+            "previous_day": previous_day,
             "latest_generated_at": _text(latest.get("generated_at")),
             "latest_summary": (_text(latest.get("summary_lines")[0]) if latest.get("summary_lines") else ""),
             "latest_file_name": _text(latest.get("file_name")),
             "latest_note": f"最新日报生成于 {latest.get('generated_at') or '-'}，统计的是 {latest_day} 的数据",
             "baseline_cards": baseline_cards,
             "compare_cards": compare_cards,
+            "running_average_title": running_average_title,
             "running_average_cards": running_average_cards,
             "daily_rows": daily_rows,
+            "running_average_note": (
+                f"当前本地日报只统计到 {latest_day}，6月9号之后的全体均值需要 ai-loop-reporting 汇总。"
+                if not has_running_window
+                else ""
+            ),
         }
 
     def get_overview(self, *, days: int = 30, include_today_top_play: bool = True) -> dict[str, Any]:

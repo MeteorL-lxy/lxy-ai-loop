@@ -697,7 +697,7 @@ def main() -> int:
             f"实时榜={'开启' if realtime_enabled == '1' else '关闭'}，"
             f"素材直驱={'开启' if realtime_material_only == '1' else '关闭'}，"
             f"创意列表直驱={'开启' if creative_list_material_only == '1' else '关闭'}，"
-            f"官方切片={'FFmpeg' if line_name in {'fbhot_test', 'yourchannel'} else '默认'}。"
+            f"官方切片={'FFmpeg' if line_name in {'fbhot_test', 'yourchannel', 'recent_order'} else '默认'}。"
         )
         with log_path.open("a", encoding="utf-8") as log_handle, json_path.open("w", encoding="utf-8") as json_handle:
             log_handle.write(f"\n[{datetime.now().strftime('%F %T')}] $ {' '.join(cmd)}\n")

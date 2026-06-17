@@ -1,0 +1,23 @@
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+
+body {
+  min-height: 100vh;
+  color: var(--text);
+  font-family: "Avenir Next", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+  background:
+    radial-gradient(circle at top left, rgba(79, 118, 255, 0.08), transparent 26%),
+    linear-gradient(180deg, #f7faff 0%, #edf3fb 100%);
+}
+
+.section-meta,
+.metric-note,
+.line-meta,
+.hint-text,
+.sub-key,
+.drawer-head p,
+.empty-state,
+.pagination-info,
+.page-size span {
+  color: var(--muted);
+}

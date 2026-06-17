@@ -34,7 +34,10 @@ from flywheel.clipping.ai_cut_animation import (
     wait_for_short_drama_clip_task,
     download_segment_video,
 )
-from flywheel.clipping.episode_selector import select_direct_episode_info_episode
+from flywheel.clipping.episode_selector import (
+    select_direct_episode_info_episode,
+    select_random_playable_episode,
+)
 from flywheel.selection.realtime_rank_source import (
     fetch_creative_list_candidates,
     fetch_realtime_rank_candidates,
@@ -766,9 +769,13 @@ def _normalize_official_ffmpeg_clip_duration(requested_duration) -> int | str:
         except (TypeError, ValueError):
             explicit = 0
         if explicit > 0:
+            if line_name == "recent_order":
+                return max(25, min(35, explicit))
             if line_name == "yourchannel":
                 return max(15, min(20, explicit))
             return max(12, min(20, explicit))
+    if line_name == "recent_order":
+        return 30
     if line_name == "yourchannel":
         return 18
     return 15
@@ -893,11 +900,15 @@ def _creative_list_material_mode_enabled() -> bool:
 
 
 def _official_ffmpeg_mode_enabled() -> bool:
-    return _line_in("fbhot_test", "yourchannel")
+    return _line_in("fbhot_test", "yourchannel", "recent_order")
 
 
 def _yourchannel_mode_enabled() -> bool:
     return _line_in("yourchannel")
+
+
+def _recent_order_mode_enabled() -> bool:
+    return _line_in("recent_order")
 
 
 def _select_realtime_external_sources(args: argparse.Namespace, config, *, target_count: int | None = None) -> tuple[list[dict], list[dict]]:
@@ -1017,6 +1028,204 @@ def _select_creative_list_external_sources(args: argparse.Namespace, config, *, 
         raise SystemExit(
             "创意列表线路已匹配到候选素材，但没有可直接进入剪辑的外部视频。"
         )
+    return sources, skipped[:10]
+
+
+def _recent_order_title_sheet_path() -> Path:
+    raw = str(os.getenv("BARRY_LOOP_RECENT_ORDER_FILE") or "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    preferred = Path("/Users/xinyuliu/Downloads/近一个月北斗出单剧信息.xlsx")
+    return preferred.resolve()
+
+
+def _recent_order_cursor_state_path() -> Path:
+    raw = str(os.getenv("BARRY_LOOP_RECENT_ORDER_STATE_FILE") or "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    state_root = str(os.getenv("BARRY_LOOP_STATE_ROOT") or "").strip()
+    base = Path(state_root).expanduser().resolve() if state_root else (MODULE_ROOT_DIR / "runtime" / "continuous-loop").resolve()
+    return (base / "_shared" / "recent_order_cursor.json").resolve()
+
+
+def _normalize_recent_order_app_id(value: object) -> str:
+    raw = str(value or "").strip().lower()
+    alias_map = globals().get("CLIP_SUPPORTED_DRAMA_PLATFORM_ALIASES")
+    if isinstance(alias_map, dict):
+        return str(alias_map.get(raw, raw) or "").strip().lower()
+    return raw
+
+
+def _load_recent_order_titles_from_excel(path: Path) -> list[dict[str, object]]:
+    try:
+        from openpyxl import load_workbook
+    except Exception:
+        return []
+    try:
+        workbook = load_workbook(path, read_only=False, data_only=True)
+    except Exception:
+        return []
+    worksheet = workbook[workbook.sheetnames[0]]
+    header = [
+        str(value or "").strip()
+        for value in next(worksheet.iter_rows(min_row=1, max_row=1, values_only=True), ())
+    ]
+    theater_idx = header.index("剧场") if "剧场" in header else 0
+    drama_id_idx = header.index("剧id") if "剧id" in header else 1
+    title_idx = header.index("剧名") if "剧名" in header else 2
+    order_amount_idx = header.index("订单金额") if "订单金额" in header else 3
+    rows: list[dict[str, object]] = []
+    for row_number, row in enumerate(worksheet.iter_rows(min_row=2, values_only=True), start=2):
+        if title_idx >= len(row) or theater_idx >= len(row):
+            continue
+        title = str(row[title_idx] or "").strip()
+        app_id = _normalize_recent_order_app_id(row[theater_idx])
+        if not title or not app_id:
+            continue
+        order_amount = 0.0
+        if order_amount_idx < len(row):
+            try:
+                order_amount = float(row[order_amount_idx] or 0)
+            except Exception:
+                order_amount = 0.0
+        drama_id = ""
+        if drama_id_idx < len(row):
+            drama_id = str(row[drama_id_idx] or "").strip()
+        rows.append(
+            {
+                "row_number": row_number,
+                "app_id": app_id,
+                "title": title,
+                "drama_id": drama_id,
+                "order_amount": order_amount,
+            }
+        )
+    return rows
+
+
+def _load_recent_order_titles() -> list[dict[str, object]]:
+    path = _recent_order_title_sheet_path()
+    if not path.exists():
+        return []
+    if path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+        return []
+    return _load_recent_order_titles_from_excel(path)
+
+
+def _load_recent_order_cursor_state() -> dict[str, object]:
+    path = _recent_order_cursor_state_path()
+    if not path.exists():
+        return {"next_index": 0, "cycle_count": 0}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"next_index": 0, "cycle_count": 0}
+    if not isinstance(payload, dict):
+        return {"next_index": 0, "cycle_count": 0}
+    return {
+        "next_index": max(0, int(payload.get("next_index") or 0)),
+        "cycle_count": max(0, int(payload.get("cycle_count") or 0)),
+    }
+
+
+def _save_recent_order_cursor_state(next_index: int, cycle_count: int) -> None:
+    path = _recent_order_cursor_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "next_index": max(0, int(next_index or 0)),
+        "cycle_count": max(0, int(cycle_count or 0)),
+        "updated_at": time.strftime("%F %T"),
+    }
+    temp_path = path.with_suffix(f"{path.suffix}.tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temp_path.replace(path)
+
+
+def _select_recent_order_sources(args: argparse.Namespace, config, *, target_count: int | None = None) -> tuple[list[dict], list[dict]]:
+    del config
+    desired_count = max(args.count, int(target_count or args.count))
+    rows = _load_recent_order_titles()
+    if not rows:
+        raise SystemExit(f"近月出单剧 Excel 为空或缺失：{_recent_order_title_sheet_path()}")
+
+    state = _load_recent_order_cursor_state()
+    total_rows = len(rows)
+    cursor = int(state.get("next_index") or 0) % total_rows
+    cycle_count = int(state.get("cycle_count") or 0)
+    retry_count = max(0, int(getattr(args, "source_prepare_retry_count", 0) or 0))
+    max_scan = max(total_rows, desired_count * 50)
+    scanned = 0
+    sources: list[dict[str, object]] = []
+    skipped: list[dict[str, object]] = []
+
+    while len(sources) < desired_count and scanned < max_scan:
+        row = dict(rows[cursor])
+        title = str(row.get("title") or "").strip()
+        app_id = str(row.get("app_id") or "").strip()
+        drama, search_meta = _find_official_title_match(title, app_id)
+        _emit_status_line(
+            "recent_order_title_search",
+            {
+                "line": _line_name(),
+                **search_meta,
+                "row_number": int(row.get("row_number") or 0),
+                "order_amount": float(row.get("order_amount") or 0.0),
+                "matched": bool(drama),
+            },
+        )
+        if not drama:
+            skipped.append(
+                {
+                    "title": title,
+                    "app_id": app_id,
+                    "row_number": int(row.get("row_number") or 0),
+                    "reason": "official_title_not_found",
+                }
+            )
+        else:
+            episode = select_random_playable_episode(
+                str(drama.get("serial_id") or ""),
+                app_id,
+                retry_count=retry_count,
+            )
+            if not bool(episode.get("supported")):
+                skipped.append(
+                    {
+                        "title": title,
+                        "app_id": app_id,
+                        "row_number": int(row.get("row_number") or 0),
+                        "reason": str(episode.get("reason") or "unsupported_episode"),
+                    }
+                )
+            else:
+                drama["source_mode"] = "official_ffmpeg"
+                drama["candidate_fetch_source"] = "recent_order_official_ffmpeg"
+                drama["recent_order_row_number"] = int(row.get("row_number") or 0)
+                drama["recent_order_order_amount"] = float(row.get("order_amount") or 0.0)
+                drama["recent_order_drama_id"] = str(row.get("drama_id") or "")
+                drama["recent_order_cycle_count"] = cycle_count
+                sources.append({"drama": drama, "episode": episode})
+        scanned += 1
+        cursor = (cursor + 1) % total_rows
+        if cursor == 0:
+            cycle_count += 1
+
+    if bool(getattr(args, "execute", False)):
+        _save_recent_order_cursor_state(cursor, cycle_count)
+    if not sources:
+        reason_counts = _count_skip_reasons(skipped)
+        _emit_status_line(
+            "recent_order_selection_empty",
+            {
+                "line": _line_name(),
+                "title_count": total_rows,
+                "matched_source_count": 0,
+                "scanned_count": scanned,
+                "skip_reason_counts": reason_counts,
+                "skipped_preview": skipped[:10],
+            },
+        )
+        raise SystemExit("近月出单剧线路已扫描 Excel，但没有找到可直接进入官方 FFmpeg 快切的素材。")
     return sources, skipped[:10]
 
 
@@ -1365,7 +1574,13 @@ def _build_batch_plan(args: argparse.Namespace, config) -> dict[str, object]:
         accounts = accounts[: args.count]
 
     plan_items: list[dict] = []
-    if _yourchannel_mode_enabled():
+    if _recent_order_mode_enabled():
+        selected_sources, skipped = _select_recent_order_sources(
+            args,
+            config,
+            target_count=_batch_source_reserve_target(args.count),
+        )
+    elif _yourchannel_mode_enabled():
         selected_sources, skipped = _select_yourchannel_sources(
             args,
             config,
@@ -1416,6 +1631,7 @@ def _build_batch_plan(args: argparse.Namespace, config) -> dict[str, object]:
         "skipped_preview": skipped[:10],
         "realtime_enabled": bool(_realtime_material_mode_enabled()),
         "creative_list_enabled": bool(_creative_list_material_mode_enabled()),
+        "recent_order_enabled": bool(_recent_order_mode_enabled()),
         "yourchannel_enabled": bool(_yourchannel_mode_enabled()),
         "official_ffmpeg_enabled": bool(_official_ffmpeg_mode_enabled()),
     }

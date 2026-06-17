@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import os
+import random
 import time
 from typing import Any
 
@@ -100,7 +102,11 @@ def _episode_api_with_retries(loader, *, retry_count: int) -> Any:
 
 
 def _supports_direct_episode_info_fallback(app_id: str) -> bool:
-    return str(app_id or "").strip().lower() == "yourchannel_drama"
+    normalized_app_id = str(app_id or "").strip().lower()
+    if normalized_app_id == "yourchannel_drama":
+        return True
+    line_name = str(os.getenv("BARRY_LOOP_LINE_NAME") or "").strip().lower()
+    return line_name == "recent_order"
 
 
 def select_direct_episode_info_episode(
@@ -237,4 +243,94 @@ def select_best_episode(serial_id: str | int, app_id: str, *, retry_count: int =
         ),
         "supported": True,
         "candidates": scored[: min(10, len(scored))],
+    }
+
+
+def select_random_playable_episode(
+    serial_id: str | int,
+    app_id: str,
+    *,
+    retry_count: int = 0,
+) -> dict[str, Any]:
+    try:
+        rows = _episode_api_with_retries(
+            lambda: require_success(get_episode_list(serial_id=int(serial_id)), "获取短剧剧集列表"),
+            retry_count=retry_count,
+        )
+    except InbeidouError as exc:
+        if _supports_direct_episode_info_fallback(app_id):
+            fallback = select_direct_episode_info_episode(
+                serial_id,
+                app_id,
+                retry_count=retry_count,
+            )
+            if bool(fallback.get("supported")):
+                fallback["selection_mode"] = "random_direct_episode_info_fallback"
+                fallback["reason"] = "列表不可用，已回退到 episode/info 直探测可播放剧集。"
+                return fallback
+        return {
+            "episode_order": 1,
+            "episode_count": 0,
+            "selection_mode": "random_episode_unsupported_source",
+            "reason": str(exc),
+            "supported": False,
+            "candidates": [],
+        }
+
+    episodes = [dict(row) for row in rows if _episode_order(dict(row)) > 0]
+    episodes.sort(key=_episode_order)
+    if not episodes:
+        return {
+            "episode_order": 1,
+            "episode_count": 0,
+            "selection_mode": "random_episode_empty",
+            "reason": "no_episode_rows",
+            "supported": False,
+            "candidates": [],
+        }
+
+    total = len(episodes)
+    playable_rows = [row for row in episodes if _availability_score(row, {}) > 0]
+    scored = [_scored_episode(row, {}, total=total) for row in playable_rows]
+
+    if not scored:
+        probe_rows = list(episodes)
+        random.shuffle(probe_rows)
+        for row in probe_rows[: min(MAX_EPISODE_DETAIL_PROBES * 2, len(probe_rows))]:
+            order = _episode_order(row)
+            try:
+                info = _episode_api_with_retries(
+                    lambda order=order: require_success(
+                        get_episode_info(serial_id=int(serial_id), episode_order=order, app_id=str(app_id)),
+                        f"获取第 {order} 集详情",
+                    ),
+                    retry_count=retry_count,
+                )
+            except InbeidouError:
+                info = {}
+            scored.append(_scored_episode(row, info, total=total))
+
+    playable_scored = [item for item in scored if float(item.get("availability_score") or 0) > 0]
+    if not playable_scored:
+        return {
+            "episode_order": 1,
+            "episode_count": total,
+            "selection_mode": "random_episode_no_playable",
+            "reason": "episode rows exist but no playable mp4/play_url is available for the clipping workflow",
+            "supported": False,
+            "candidates": scored[: min(10, len(scored))],
+        }
+
+    selected = dict(random.choice(playable_scored))
+    return {
+        "episode_order": int(selected["episode_order"]),
+        "episode_count": total,
+        "episode_id": selected.get("episode_id"),
+        "episode_name": selected.get("episode_name"),
+        "play_url": selected.get("play_url") or "",
+        "duration": int(selected.get("duration") or 0),
+        "selection_mode": "random_playable_episode",
+        "reason": "随机选择可播放剧集，用于官方 FFmpeg 快切线路。",
+        "supported": True,
+        "candidates": playable_scored[: min(10, len(playable_scored))],
     }

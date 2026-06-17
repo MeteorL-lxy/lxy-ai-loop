@@ -115,12 +115,15 @@ export function renderHistory(overview) {
     };
 
     const dailyRows = payload.daily_rows || [];
-    const runningAverageTitle = payload.latest_day
+    const runningAverageTitle = payload.running_average_title || (payload.latest_day
       ? `从 2026-06-09 到 ${payload.latest_day} 的均值`
-      : "从 2026-06-09 到前一天的均值";
+      : "从 2026-06-09 到前一天的均值");
     const dailyTimelineTitle = payload.latest_day
       ? `2026-05-19 到 ${payload.latest_day} 的每日全体汇总`
       : "2026-05-19 到前一天的每日全体汇总";
+    const compareTitle = payload.latest_day && payload.previous_day
+      ? `最新一天（${payload.latest_day}）对比前一天（${payload.previous_day}）`
+      : "最新一天对比前一天";
 
     node.innerHTML = `
       <div class="history-summary">
@@ -140,7 +143,7 @@ export function renderHistory(overview) {
       </section>
 
       <section class="history-section">
-        <h3>最新一天对比前一天</h3>
+        <h3>${esc(compareTitle)}</h3>
         <div class="history-card-grid">
           ${(payload.compare_cards || []).map(renderCard).join("")}
         </div>
@@ -148,9 +151,12 @@ export function renderHistory(overview) {
 
       <section class="history-section">
         <h3>${esc(runningAverageTitle)}</h3>
-        <div class="history-card-grid compact">
-          ${(payload.running_average_cards || []).map(renderCard).join("")}
-        </div>
+        ${(payload.running_average_cards || []).length
+          ? `<div class="history-card-grid compact">
+              ${(payload.running_average_cards || []).map(renderCard).join("")}
+            </div>`
+          : `<div class="empty-state">${esc(payload.running_average_note || "当前还没有 2026-06-09 之后的全体均值样本。")}</div>`
+        }
       </section>
 
       <section class="history-section">

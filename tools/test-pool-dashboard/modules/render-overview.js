@@ -23,7 +23,7 @@ export function renderToday(overview) {
   const summary = overview.overall_summary || {};
   const requested = Number(summary.today_requested_count || 0);
   const success = Number(summary.today_success_count || 0);
-  const failed = Math.max(0, requested - success);
+  const failed = Number(summary.today_failed_count || 0);
   const todayKey = summary.today_metrics_day_key || summary.summary_day_key || "-";
   const todayViewMissing = Number(summary.today_view_total || 0) === 0;
   const todayClickMissing = Number(summary.today_click_total || 0) === 0;
@@ -31,7 +31,7 @@ export function renderToday(overview) {
   const items = [
     { label: "今日发起数", value: fmtNum(requested), note: `统计日期 ${todayKey}`, tone: "blue" },
     { label: "今日成功数", value: fmtNum(success), note: `成功账号 ${fmtNum(summary.success_accounts_today)}`, tone: "green" },
-    { label: "今日失败数", value: fmtNum(failed), note: "按发起数减成功数计算", tone: "plain" },
+    { label: "今日失败数", value: fmtNum(failed), note: "发布管理 ERROR 口径", tone: "plain" },
     { label: "今日成功率", value: fmtPct(summary.today_success_rate), note: `剧目数 ${fmtNum(summary.title_count_today)}`, tone: "green" },
     { label: "今日播放量", value: metricDisplay(summary.today_view_total, { missing: todayViewMissing }), note: todayViewMissing ? "今日播放回收待接入" : "Facebook 今日播放", tone: "plain" },
     { label: "今日点击数", value: metricDisplay(summary.today_click_total, { missing: todayClickMissing }), note: todayClickMissing ? "今日点击回收待接入" : "今日推广链接点击", tone: "blue" },

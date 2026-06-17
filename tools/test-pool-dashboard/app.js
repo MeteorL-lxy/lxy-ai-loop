@@ -7,6 +7,7 @@ import { renderDailyTopHistory, renderHistory } from "./modules/render-history.j
 import { renderAccountGroups } from "./modules/render-account-groups.js";
 import { renderOptions } from "./modules/render-options.js";
 import { closeDrawer, loadRounds } from "./modules/rounds.js";
+import { ensureLayoutLoaded } from "./modules/layout.js";
 
 async function loadTopPlay({ force = false } = {}) {
   if (state.topPlayRefreshing) return;
@@ -114,6 +115,7 @@ function bindEvents() {
   qs("refresh-btn").addEventListener("click", () => {
     refreshAll({
       forceRounds: qs("rounds-panel").open,
+      refreshTrend: true,
       forceTopPlay: true,
     }).catch((error) => console.error(error));
   });
@@ -160,8 +162,13 @@ function showError(error) {
   qs("status-text").textContent = "加载失败";
 }
 
-bindEvents();
-refreshAll().catch((error) => console.error(error));
-window.setInterval(() => {
-  refreshRealtimePanels().catch((error) => console.error(error));
-}, state.autoRefreshMs);
+async function bootstrap() {
+  await ensureLayoutLoaded();
+  bindEvents();
+  await refreshAll();
+  window.setInterval(() => {
+    refreshRealtimePanels().catch((error) => console.error(error));
+  }, state.autoRefreshMs);
+}
+
+bootstrap().catch((error) => console.error(error));
