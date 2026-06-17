@@ -4,6 +4,7 @@ import math
 import os
 import random
 import time
+from urllib.parse import urlparse
 from typing import Any
 
 from inbeidou_cli import InbeidouError, get_episode_info, get_episode_list, require_success
@@ -31,6 +32,60 @@ def _availability_score(row: dict[str, Any], info: dict[str, Any]) -> float:
     return 0.0
 
 
+def _extract_best_play_url(row: dict[str, Any], info: dict[str, Any]) -> str:
+    return str(
+        row.get("play_url") or info.get("play_url") or info.get("mp4_OD") or info.get("m3u8_HD") or ""
+    ).strip()
+
+
+def _is_probable_mp4_url(url: str) -> bool:
+    normalized = str(url or "").strip()
+    if not normalized:
+        return False
+    lowered = normalized.lower()
+    if lowered.startswith("hls://") or ".m3u8" in lowered:
+        return False
+    parsed = urlparse(normalized)
+    path = (parsed.path or "").lower()
+    if path.endswith(".mp4"):
+        return True
+    if "mp4" in lowered and "m3u8" not in lowered:
+        return True
+    return False
+
+
+def _is_probable_hls_url(url: str) -> bool:
+    normalized = str(url or "").strip()
+    if not normalized:
+        return False
+    lowered = normalized.lower()
+    return lowered.startswith("hls://") or ".m3u8" in lowered
+
+
+def _extract_mp4_only_play_url(row: dict[str, Any], info: dict[str, Any]) -> str:
+    mp4_url = str(row.get("mp4_OD") or info.get("mp4_OD") or "").strip()
+    if _is_probable_mp4_url(mp4_url):
+        return mp4_url
+    play_url = str(row.get("play_url") or info.get("play_url") or "").strip()
+    if _is_probable_mp4_url(play_url):
+        return play_url
+    return ""
+
+
+def _extract_direct_media_play_url(row: dict[str, Any], info: dict[str, Any]) -> str:
+    mp4_url = _extract_mp4_only_play_url(row, info)
+    if mp4_url:
+        return mp4_url
+    for candidate in (
+        str(row.get("play_url") or info.get("play_url") or "").strip(),
+        str(info.get("m3u8_HD") or "").strip(),
+        str(row.get("m3u8_HD") or "").strip(),
+    ):
+        if _is_probable_hls_url(candidate):
+            return candidate
+    return ""
+
+
 def _episode_base_score(order: int, total: int) -> float:
     position = _position_score(order, total)
     non_edge_bonus = 0.15 if 1 < order < total else 0.0
@@ -39,18 +94,31 @@ def _episode_base_score(order: int, total: int) -> float:
     return position * 0.3 + non_edge_bonus + short_series_boost + mid_series_boost
 
 
-def _scored_episode(row: dict[str, Any], info: dict[str, Any], *, total: int) -> dict[str, Any]:
+def _scored_episode(
+    row: dict[str, Any],
+    info: dict[str, Any],
+    *,
+    total: int,
+    require_mp4: bool = False,
+    allow_hls: bool = False,
+) -> dict[str, Any]:
     order = _episode_order(row)
     availability = _availability_score(row, info)
     position = _position_score(order, total)
     score = availability * 0.55 + _episode_base_score(order, total)
+    if require_mp4 and allow_hls:
+        play_url = _extract_direct_media_play_url(row, info)
+    elif require_mp4:
+        play_url = _extract_mp4_only_play_url(row, info)
+    else:
+        play_url = _extract_best_play_url(row, info)
     return {
         "episode_order": order,
         "episode_id": row.get("episode_id") or info.get("id") or order,
         "episode_name": row.get("episode_name") or info.get("chapter_name") or f"Episode {order}",
-        "play_url": row.get("play_url") or info.get("play_url") or info.get("mp4_OD") or info.get("m3u8_HD") or "",
+        "play_url": play_url,
         "duration": int(row.get("duration") or info.get("duration") or info.get("file_duration") or 0),
-        "availability_score": round(availability, 4),
+        "availability_score": round(1.0 if play_url else 0.0 if (require_mp4 or allow_hls) else availability, 4),
         "position_score": round(position, 4),
         "final_score": round(score, 4),
     }
@@ -114,6 +182,8 @@ def select_direct_episode_info_episode(
     app_id: str,
     *,
     retry_count: int = 0,
+    require_mp4: bool = False,
+    allow_hls: bool = False,
 ) -> dict[str, Any]:
     scored: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -134,10 +204,16 @@ def select_direct_episode_info_episode(
             "episode_order": order,
             "episode_id": info.get("id") or order,
             "episode_name": info.get("chapter_name") or f"Episode {order}",
-            "play_url": info.get("play_url") or info.get("mp4_OD") or info.get("m3u8_HD") or "",
+            "play_url": (
+                _extract_direct_media_play_url({}, info)
+                if require_mp4 and allow_hls
+                else _extract_mp4_only_play_url({}, info)
+                if require_mp4
+                else _extract_best_play_url({}, info)
+            ),
             "duration": int(info.get("duration") or info.get("file_duration") or 0),
         }
-        scored.append(_scored_episode(row, info, total=total))
+        scored.append(_scored_episode(row, info, total=total, require_mp4=require_mp4, allow_hls=allow_hls))
     scored.sort(key=lambda item: (float(item["final_score"]), -int(item["episode_order"])), reverse=True)
     if scored and float(scored[0].get("availability_score") or 0) > 0:
         selected = scored[0]
@@ -251,6 +327,8 @@ def select_random_playable_episode(
     app_id: str,
     *,
     retry_count: int = 0,
+    require_mp4: bool = False,
+    allow_hls: bool = False,
 ) -> dict[str, Any]:
     try:
         rows = _episode_api_with_retries(
@@ -263,10 +341,18 @@ def select_random_playable_episode(
                 serial_id,
                 app_id,
                 retry_count=retry_count,
+                require_mp4=require_mp4,
+                allow_hls=allow_hls,
             )
             if bool(fallback.get("supported")):
                 fallback["selection_mode"] = "random_direct_episode_info_fallback"
-                fallback["reason"] = "列表不可用，已回退到 episode/info 直探测可播放剧集。"
+                fallback["reason"] = (
+                    "列表不可用，已回退到 episode/info 直探测可播放剧集。"
+                    if not require_mp4
+                    else "列表不可用，已回退到 episode/info 直探测可播放 MP4/HLS 剧集。"
+                    if allow_hls
+                    else "列表不可用，已回退到 episode/info 直探测可播放 MP4 剧集。"
+                )
                 return fallback
         return {
             "episode_order": 1,
@@ -291,7 +377,7 @@ def select_random_playable_episode(
 
     total = len(episodes)
     playable_rows = [row for row in episodes if _availability_score(row, {}) > 0]
-    scored = [_scored_episode(row, {}, total=total) for row in playable_rows]
+    scored = [_scored_episode(row, {}, total=total, require_mp4=require_mp4, allow_hls=allow_hls) for row in playable_rows]
 
     if not scored:
         probe_rows = list(episodes)
@@ -308,7 +394,7 @@ def select_random_playable_episode(
                 )
             except InbeidouError:
                 info = {}
-            scored.append(_scored_episode(row, info, total=total))
+            scored.append(_scored_episode(row, info, total=total, require_mp4=require_mp4, allow_hls=allow_hls))
 
     playable_scored = [item for item in scored if float(item.get("availability_score") or 0) > 0]
     if not playable_scored:
@@ -316,7 +402,13 @@ def select_random_playable_episode(
             "episode_order": 1,
             "episode_count": total,
             "selection_mode": "random_episode_no_playable",
-            "reason": "episode rows exist but no playable mp4/play_url is available for the clipping workflow",
+            "reason": (
+                "episode rows exist but no playable mp4/play_url is available for the clipping workflow"
+                if not require_mp4
+                else "episode rows exist but no direct MP4/HLS source is available for the official ffmpeg workflow"
+                if allow_hls
+                else "episode rows exist but no direct MP4 source is available for the official ffmpeg workflow"
+            ),
             "supported": False,
             "candidates": scored[: min(10, len(scored))],
         }
@@ -330,7 +422,13 @@ def select_random_playable_episode(
         "play_url": selected.get("play_url") or "",
         "duration": int(selected.get("duration") or 0),
         "selection_mode": "random_playable_episode",
-        "reason": "随机选择可播放剧集，用于官方 FFmpeg 快切线路。",
+        "reason": (
+            "随机选择可播放剧集，用于官方 FFmpeg 快切线路。"
+            if not require_mp4
+            else "随机选择可直接下载的 MP4/HLS 剧集，用于官方 FFmpeg 快切线路。"
+            if allow_hls
+            else "随机选择可直接下载的 MP4 剧集，用于官方 FFmpeg 快切线路。"
+        ),
         "supported": True,
         "candidates": playable_scored[: min(10, len(playable_scored))],
     }

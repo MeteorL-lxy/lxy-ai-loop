@@ -45,7 +45,6 @@ BACKEND_ROOT = Path(__file__).resolve().parent
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from flywheel.feishu_cards import build_novel_test_feishu_card
 
 
 API_ENV = os.getenv("BARRY_VIDEO_API_ENV") or os.getenv("INBEIDOU_API_ENV") or "test"
@@ -411,15 +410,6 @@ def _env_truthy_with_default(name: str, *, default: bool) -> bool:
     if raw is None:
         return default
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _novel_feishu_push_enabled() -> bool:
-    return _env_truthy_with_default("BARRY_FEISHU_NOVEL_PUSH", default=_env_truthy_with_default("BARRY_FEISHU_TEST_PUSH", default=True))
-
-
-def _novel_test_summary_dir() -> Path:
-    _load_feishu_env_once()
-    return Path(os.getenv("BARRY_VIDEO_TEST_SUMMARY_DIR") or DEFAULT_TEST_SUMMARY_DIR).expanduser()
 
 
 def _feishu_app_id() -> str:
@@ -4213,116 +4203,6 @@ def _enrich_novel_batch_report(payload: dict) -> dict:
     return report
 
 
-def _novel_report_markdown(payload: dict) -> str:
-    report = payload.get("report_zh") if isinstance(payload.get("report_zh"), dict) else {}
-    generated_at = str(report.get("生成时间") or datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    lines = [
-        f"# 小说测试报告（{generated_at}）",
-        "",
-        f"- 执行模式：{report.get('执行模式') or '小说手动测试'}",
-        f"- 环境：{report.get('环境') or '-'}",
-        f"- 目标平台：{report.get('目标平台') or '-'}",
-        f"- 计划小说数：{report.get('计划小说数') or 0}",
-        f"- 已生成：{report.get('已生成') or 0}",
-        f"- 已发布：{report.get('已发布') or 0}",
-        f"- 失败：{report.get('失败') or 0}",
-        "",
-        "## 执行总结",
-        "",
-    ]
-    summary = str(payload.get("user_summary_zh") or "").strip()
-    if summary:
-        lines.extend(summary.splitlines())
-    else:
-        lines.append("- 暂无")
-    rows = report.get("任务明细") if isinstance(report.get("任务明细"), list) else []
-    lines.extend(["", "## 任务明细", ""])
-    if rows:
-        headers = ["序号", "账号", "小说", "生成链路", "段数", "视频时长", "发布状态", "失败原因", "推广链接"]
-        lines.append("| " + " | ".join(headers) + " |")
-        lines.append("| " + " | ".join("---" for _ in headers) + " |")
-        for row in rows:
-            lines.append(
-                "| "
-                + " | ".join(
-                    str(row.get(key) if row.get(key) not in (None, "") else "-").replace("|", "\\|").replace("\n", "<br>")
-                    for key in headers
-                )
-                + " |"
-            )
-    else:
-        lines.append("- 暂无")
-    return "\n".join(lines).rstrip() + "\n"
-
-
-def _maybe_write_novel_test_summary(payload: dict) -> dict:
-    report = payload.get("report_zh") if isinstance(payload.get("report_zh"), dict) else {}
-    if not report:
-        return {}
-    existing_files = payload.get("test_report_files") if isinstance(payload.get("test_report_files"), dict) else {}
-    existing_markdown = str(existing_files.get("markdown") or "").strip()
-    if existing_markdown and Path(existing_markdown).expanduser().exists():
-        return {"test_report_files": existing_files}
-    report_dir = _novel_test_summary_dir()
-    report_dir.mkdir(parents=True, exist_ok=True)
-    date_key = datetime.now().strftime("%Y%m%d_%H%M%S")
-    markdown_path = report_dir / f"小说测试报告_{date_key}.md"
-    markdown_path.write_text(_novel_report_markdown(payload), encoding="utf-8")
-    return {
-        "test_report_files": {
-            "directory": str(report_dir),
-            "markdown": str(markdown_path),
-        }
-    }
-
-
-def _novel_feishu_message_text(payload: dict) -> str:
-    files = payload.get("test_report_files") if isinstance(payload.get("test_report_files"), dict) else {}
-    markdown = str(files.get("markdown") or "").strip()
-    if markdown:
-        path = Path(markdown).expanduser()
-        if path.exists() and path.is_file():
-            return path.read_text(encoding="utf-8").strip()
-    return _novel_report_markdown(payload).strip()
-
-
-def _maybe_push_novel_feishu_test_report(payload: dict) -> dict:
-    if not _novel_feishu_push_enabled():
-        return {}
-    if not isinstance(payload.get("test_report_files"), dict):
-        return {}
-    existing_push = payload.get("test_feishu_push") if isinstance(payload.get("test_feishu_push"), dict) else {}
-    if str(existing_push.get("message_id") or "").strip():
-        return {"test_feishu_push": existing_push}
-    tenant_token = _feishu_get_tenant_access_token()
-    receive_id_type, receive_id = _feishu_receive_target()
-    push_mode = "interactive"
-    try:
-        message = _feishu_send_interactive_message(
-            tenant_token,
-            receive_id_type=receive_id_type,
-            receive_id=receive_id,
-            card=build_novel_test_feishu_card(payload),
-        )
-    except Exception:
-        push_mode = "text"
-        message = _feishu_send_text_message(
-            tenant_token,
-            receive_id_type=receive_id_type,
-            receive_id=receive_id,
-            text=_novel_feishu_message_text(payload),
-        )
-    return {
-        "test_feishu_push": {
-            "enabled": True,
-            "mode": push_mode,
-            "receive_id_type": receive_id_type,
-            "receive_id": receive_id,
-            "message_id": str(message.get("message_id") or ""),
-        }
-    }
-
-
 def _schedule_novel_followup_report(payload: dict, *, delay_seconds: int = DEFAULT_NOVEL_PUBLISH_FOLLOWUP_DELAY) -> dict:
     if not isinstance(payload, dict) or not isinstance(payload.get("publish"), dict):
         return {}
@@ -4359,16 +4239,8 @@ def _schedule_novel_followup_report(payload: dict, *, delay_seconds: int = DEFAU
 
 
 def _finalize_novel_payload(payload: dict) -> dict:
-    try:
-        files = _maybe_write_novel_test_summary(payload)
-        if files:
-            payload.update(files)
-    except Exception as exc:
-        payload["test_report_files"] = {"error": str(exc)}
-    try:
-        payload.update(_maybe_push_novel_feishu_test_report(payload))
-    except Exception as exc:
-        payload["test_feishu_push"] = {"enabled": True, "error": str(exc)}
+    payload.pop("test_report_files", None)
+    payload.pop("test_feishu_push", None)
     return payload
 
 
@@ -4437,12 +4309,9 @@ def _run_novel_followup_report(payload_file: str, delay_seconds: int) -> dict:
         payload["publish_status"] = payload["publish"].get("final_status")
         payload["publish_status_zh"] = payload["publish"].get("final_status_zh")
     payload = _maybe_cleanup_novel_outputs_after_publish(payload)
-    if payload.get("mode") == "batch_novel":
-        payload["report_zh"] = _enrich_novel_batch_report(payload)
-    else:
-        payload["report_zh"] = _single_novel_report_zh(payload)
-        payload["mode"] = payload.get("mode") or "novel_video"
-    payload["user_summary_zh"] = _single_novel_user_summary_zh(payload) if payload.get("mode") == "novel_video" else _novel_batch_user_summary_zh(payload.get("report_zh") or {})
+    payload.pop("report_zh", None)
+    payload.pop("test_report_files", None)
+    payload.pop("test_feishu_push", None)
     payload = _finalize_novel_payload(payload)
     payload["followup_report"] = {
         **existing_followup,
@@ -4743,9 +4612,6 @@ def cmd_novels(args):
             if getattr(args, "execute", False):
                 if getattr(args, "publish", False):
                     payload.update(_schedule_novel_followup_report(payload))
-                else:
-                    payload["report_zh"] = _enrich_novel_batch_report(payload)
-                    payload = _finalize_novel_payload(payload)
             if args.json:
                 pretty_print_json(payload)
                 return
@@ -4757,9 +4623,6 @@ def cmd_novels(args):
             payload["mode"] = "novel_video"
             if getattr(args, "publish", False):
                 payload.update(_schedule_novel_followup_report(payload))
-            else:
-                payload["report_zh"] = _single_novel_report_zh(payload)
-                payload = _finalize_novel_payload(payload)
         if args.json:
             pretty_print_json(payload)
             return

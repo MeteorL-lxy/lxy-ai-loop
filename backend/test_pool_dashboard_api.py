@@ -491,6 +491,86 @@ def _classify_unsubmitted_breakdown(archive: RoundArchive) -> dict[str, Any]:
     return _finalize_unsubmitted_breakdown(breakdown)
 
 
+def _normalize_round_issue_text(reason: Any) -> str:
+    text = _text(reason)
+    if not text:
+        return ""
+    if "下载状态=success，剪辑状态=failed，错误=" in text:
+        return "剪辑失败"
+    if "查询剪辑任务失败" in text:
+        return "剪辑任务查询失败"
+    if "任务队列已满" in text:
+        return "剪辑队列已满"
+    if "下载状态=failed" in text or "尚未进入剪辑" in text:
+        return "素材下载后未进入剪辑"
+    if "HTTPSConnectionPool" in text or "Max retries exceeded" in text:
+        return "上游接口超时"
+    if "moov atom not found" in text or "Invalid data found" in text:
+        return "素材文件损坏"
+    if "探测视频信息失败" in text or "ffprobe 获取视频信息失败" in text:
+        return "视频信息探测失败"
+    if "查询开放API访问密钥失败" in text:
+        return "ai-cut 密钥读取失败"
+    if "查询任务失败" in text:
+        return "ai-cut 任务查询失败"
+    if "HTTP 500" in text:
+        return "ai-cut 接口报错"
+    if "未找到视频流" in text:
+        return "视频流识别失败"
+    if "文件不存在" in text:
+        return "素材文件缺失"
+    if "时长超限" in text:
+        return "视频时长超限"
+    if "分辨率错误" in text:
+        return "分辨率不符合要求"
+    if "post id is empty" in text:
+        return "发布记录缺少 post id"
+    return re.sub(r"\s+", " ", text).strip()[:80]
+
+
+def _build_round_judgement(archive: RoundArchive) -> dict[str, str]:
+    issue_counter: Counter[str] = Counter()
+    for item in archive.items:
+        normalized = _normalize_round_issue_text(item.get("failure_reason"))
+        if normalized:
+            issue_counter[normalized] += 1
+
+    breakdown = _classify_unsubmitted_breakdown(archive)
+    primary_issue = ""
+    if issue_counter:
+        issue_text, issue_count = issue_counter.most_common(1)[0]
+        primary_issue = f"{issue_text}（{issue_count}条）"
+    elif archive.unsubmitted_count > 0:
+        primary_issue = breakdown.get("primary_reason_label") or "有未提交结果"
+    elif archive.processing_count > 0:
+        primary_issue = "还有结果未收敛"
+    else:
+        primary_issue = "本轮无明显异常"
+
+    total_problem = archive.failed_count + archive.unsubmitted_count
+    severe = (
+        archive.status in {"failed", "blocked", "error"}
+        or total_problem >= max(3, int(round(max(archive.requested_count, 1) * 0.3)))
+    )
+    if severe:
+        return {
+            "judgement_label": "明显异常",
+            "judgement_tone": "error",
+            "primary_issue": primary_issue,
+        }
+    if archive.failed_count > 0 or archive.unsubmitted_count > 0 or archive.processing_count > 0:
+        return {
+            "judgement_label": "轻微异常",
+            "judgement_tone": "warn",
+            "primary_issue": primary_issue,
+        }
+    return {
+        "judgement_label": "正常",
+        "judgement_tone": "done",
+        "primary_issue": primary_issue,
+    }
+
+
 def _report_path(runtime_mode: str, day_key: str, line_name: str, round_name: str) -> Path | None:
     if runtime_mode != "continuous":
         return None
@@ -2592,6 +2672,7 @@ class TestPoolDashboardService:
         items = []
         for row in page:
             breakdown = _classify_unsubmitted_breakdown(row)
+            judgement = _build_round_judgement(row)
             items.append(
                 {
                     "archive_key": row.archive_key,
@@ -2622,6 +2703,9 @@ class TestPoolDashboardService:
                     "flywheel_config": row.flywheel_config,
                     "unsubmitted_breakdown": breakdown,
                     "unsubmitted_summary": breakdown.get("summary") or "-",
+                    "judgement_label": judgement["judgement_label"],
+                    "judgement_tone": judgement["judgement_tone"],
+                    "primary_issue": judgement["primary_issue"],
                 }
             )
         return {"total": total, "limit": limit, "offset": offset, "items": items}

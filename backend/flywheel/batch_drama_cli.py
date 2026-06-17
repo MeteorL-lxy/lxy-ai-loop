@@ -1187,6 +1187,8 @@ def _select_recent_order_sources(args: argparse.Namespace, config, *, target_cou
                 str(drama.get("serial_id") or ""),
                 app_id,
                 retry_count=retry_count,
+                require_mp4=True,
+                allow_hls=True,
             )
             if not bool(episode.get("supported")):
                 skipped.append(
@@ -1904,11 +1906,47 @@ def _external_source_cache_path(*, output_dir: Path, drama: dict, video_url: str
     return output_dir / f"{safe_title}_{app_id}_{digest}_external_source.mp4"
 
 
+def _sniff_media_container(path: Path) -> str:
+    try:
+        head = path.read_bytes()[:32]
+    except OSError as exc:
+        raise RuntimeError(f"读取素材文件失败: {path.name}: {exc}") from exc
+    if len(head) >= 8 and head[4:8] == b"ftyp":
+        return "mp4"
+    if head.startswith(b"PK\x03\x04"):
+        return "zip"
+    if head.startswith(b"\x1a\x45\xdf\xa3"):
+        return "mkv"
+    if head.startswith(b"RIFF") and b"WEBP" in head[:16]:
+        return "webp"
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "jpeg"
+    return "unknown"
+
+
+def _validate_downloaded_mp4_file(path: Path) -> Path:
+    if not path.exists() or path.stat().st_size <= 0:
+        raise RuntimeError(f"下载后的素材文件为空: {path.name}")
+    container = _sniff_media_container(path)
+    if container != "mp4":
+        raise RuntimeError(f"素材类型不符: 下载结果不是 MP4，而是 {container}: {path.name}")
+    return path
+
+
 def _ensure_external_source_file(*, video_url: str, output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists() and output_path.stat().st_size > 0:
-        return output_path
-    return Path(download_segment_video(video_url, output_path=output_path)).expanduser().resolve()
+        try:
+            return _validate_downloaded_mp4_file(output_path)
+        except Exception:
+            try:
+                output_path.unlink()
+            except OSError:
+                pass
+    downloaded = Path(download_segment_video(video_url, output_path=output_path)).expanduser().resolve()
+    return _validate_downloaded_mp4_file(downloaded)
 
 
 def _is_hls_url(video_url: str) -> bool:
@@ -2003,7 +2041,7 @@ def _wait_for_downloaded_source(
     lock_path = _download_lock_path(output_path)
     while time.time() < deadline:
         if output_path.exists() and output_path.stat().st_size > 0:
-            return output_path
+            return _validate_downloaded_mp4_file(output_path)
         if not lock_path.exists() and not partial_path.exists():
             break
         time.sleep(max(0.1, float(poll_interval_seconds or 0.5)))
@@ -2013,14 +2051,26 @@ def _wait_for_downloaded_source(
 def _ensure_remote_media_source(*, video_url: str, output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists() and output_path.stat().st_size > 0:
-        return output_path
+        try:
+            return _validate_downloaded_mp4_file(output_path)
+        except Exception:
+            try:
+                output_path.unlink()
+            except OSError:
+                pass
     lock_path = _download_lock_path(output_path)
     partial_path = _partial_download_path(output_path)
     if not _acquire_download_lock(lock_path):
         return _wait_for_downloaded_source(output_path)
     try:
         if output_path.exists() and output_path.stat().st_size > 0:
-            return output_path
+            try:
+                return _validate_downloaded_mp4_file(output_path)
+            except Exception:
+                try:
+                    output_path.unlink()
+                except OSError:
+                    pass
         try:
             if partial_path.exists():
                 partial_path.unlink()
@@ -2035,8 +2085,9 @@ def _ensure_remote_media_source(*, video_url: str, output_path: Path) -> Path:
             partial_path = downloaded
         if not partial_path.exists() or partial_path.stat().st_size <= 0:
             raise RuntimeError(f"远程素材下载失败，未生成有效文件: {output_path.name}")
+        _validate_downloaded_mp4_file(partial_path)
         partial_path.replace(output_path)
-        return output_path
+        return _validate_downloaded_mp4_file(output_path)
     except Exception:
         try:
             if partial_path.exists():

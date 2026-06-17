@@ -38,6 +38,11 @@
   min-width: 760px;
 }
 
+.rounds-table {
+  min-width: 1120px;
+  table-layout: fixed;
+}
+
 .data-table th,
 .data-table td {
   padding: 14px 14px;
@@ -61,6 +66,24 @@
   border-bottom: none;
 }
 
+.rounds-table th,
+.rounds-table td {
+  padding: 6px 12px;
+  vertical-align: middle;
+}
+
+.rounds-table tbody tr {
+  height: 56px;
+}
+
+.round-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
 .table-sub {
   margin-top: 6px;
   font-size: 12px;
@@ -68,6 +91,119 @@
   color: var(--muted);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.round-result-main {
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.rounds-table .table-sub {
+  margin-top: 2px;
+  line-height: 1.35;
+}
+
+.table-sub-inline {
+  font-size: 12px;
+  line-height: 1.2;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.rounds-table .round-result-main {
+  font-size: 13px;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.rounds-table .note-cell > div:first-child {
+  line-height: 1.3;
+}
+
+.rounds-table td {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rounds-table td:nth-child(1) {
+  width: 190px;
+}
+
+.rounds-table td:nth-child(2) {
+  width: 220px;
+}
+
+.rounds-table td:nth-child(3) {
+  width: 170px;
+}
+
+.rounds-table td:nth-child(4) {
+  width: 270px;
+}
+
+.rounds-table td:nth-child(5) {
+  width: 200px;
+}
+
+.rounds-table td:nth-child(6) {
+  width: 360px;
+}
+
+.rounds-table td:nth-child(7) {
+  width: 72px;
+}
+
+.rounds-table .note-cell,
+.rounds-table .table-sub-inline {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rounds-table .note-cell {
+  white-space: normal;
+}
+
+.round-note-scroll {
+  max-height: 42px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.25;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(94, 126, 255, 0.45) transparent;
+}
+
+.round-note-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.round-note-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.round-note-scroll::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(94, 126, 255, 0.42);
+}
+
+.rounds-table .ghost-btn {
+  min-width: 52px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+.round-judgement-cell {
+  min-width: 120px;
+}
+
+.rounds-table .status-pill {
+  min-height: 28px;
+  padding: 0 14px;
 }
 
 .daily-copy-cell {
@@ -212,4 +348,34 @@
   margin-top: 8px;
   font-size: 18px;
   font-weight: 900;
+}
+
+.drawer-panel .data-table.compact th,
+.drawer-panel .data-table.compact td {
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.detail-failure-scroll {
+  max-height: 96px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(94, 126, 255, 0.45) transparent;
+}
+
+.detail-failure-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.detail-failure-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.detail-failure-scroll::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(94, 126, 255, 0.42);
 }

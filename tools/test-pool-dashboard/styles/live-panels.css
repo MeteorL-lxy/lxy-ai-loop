@@ -92,6 +92,12 @@
   border-color: #f6caca;
 }
 
+.status-pill.warn {
+  color: #a96a00;
+  background: #fff7e8;
+  border-color: #f2d59b;
+}
+
 .status-pill.idle {
   color: var(--muted);
   background: var(--gray-soft);
