@@ -40,6 +40,7 @@ DEFAULT_MAX_EPISODES_PER_SERIAL = max(
 DEFAULT_SOURCE = str(os.getenv("BARRY_AI_ANIMATION_SOURCE", "auto_clip") or "auto_clip").strip() or "auto_clip"
 DEFAULT_REQUEST_TIMEOUT = max(10, int(os.getenv("BARRY_AI_ANIMATION_REQUEST_TIMEOUT", "60") or 60))
 DEFAULT_DOWNLOAD_TIMEOUT = max(30, int(os.getenv("BARRY_AI_ANIMATION_DOWNLOAD_TIMEOUT", "120") or 120))
+DEFAULT_MIN_TASK_TIMEOUT = max(1800, int(os.getenv("BARRY_AI_ANIMATION_MIN_TASK_TIMEOUT", "3600") or 3600))
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -253,6 +254,13 @@ def wait_for_short_drama_clip_task(
         if status in FINAL_TASK_STATUSES and _clip_results_ready(body):
             return body
         time.sleep(max(1.0, float(poll_interval)))
+    # Final recheck at the deadline boundary to avoid missing tasks that flip to
+    # success immediately after the last queued poll.
+    body = get_short_drama_clip_task(task_id, timeout=request_timeout)
+    last_body = body
+    status = str(body.get("status") or "").strip().lower()
+    if status in FINAL_TASK_STATUSES and _clip_results_ready(body):
+        return body
     raise AiCutAnimationError(f"ai-cut 任务超时未完成: task_id={task_id}, last_status={last_body.get('status')}")
 
 
@@ -345,7 +353,16 @@ def wait_for_serial_success_segment(
                 break
         time.sleep(max(1.0, float(poll_interval)))
         last_task_body = get_short_drama_clip_task(task_id, timeout=request_timeout)
-
+    # Final recheck at the timeout boundary for the same reason as above.
+    last_task_body = get_short_drama_clip_task(task_id, timeout=request_timeout)
+    for payload in (last_task_body.get("serials") or []):
+        if str((payload or {}).get("third_serial_id") or "").strip() != normalized_serial_id:
+            continue
+        last_serial_payload = dict(payload)
+        chosen = choose_success_segment(last_serial_payload, preferred_episode_order=preferred_episode_order)
+        if chosen:
+            return last_task_body, last_serial_payload, chosen
+        break
     return last_task_body, last_serial_payload, None
 
 

@@ -74,6 +74,23 @@ export function renderLineCards(overview, failures) {
     const remaining = Math.max(0, Number(row.target_total || 0) - Number(row.success_count || 0));
     const issues = issueMap.get(row.line_name) || [];
     const strategyText = String(LINE_STRATEGIES[row.line_name] || row.pool_key || "-");
+    const strategyRows = strategyText
+      .split("\n")
+      .map((line) => String(line || "").trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [label, ...rest] = line.split("：");
+        if (!rest.length) {
+          return `<div class="strategy-row"><span class="strategy-v">${esc(line)}</span></div>`;
+        }
+        return `
+          <div class="strategy-row">
+            <span class="strategy-k">${esc(label)}：</span>
+            <span class="strategy-v">${esc(rest.join("："))}</span>
+          </div>
+        `;
+      })
+      .join("");
     const issueHtml = issues.length
       ? `<div class="issue-list">${issues.slice(0, 3).map((item) => `
           <div class="issue-item">
@@ -126,7 +143,7 @@ export function renderLineCards(overview, failures) {
         <div class="line-bottom">
           <div class="line-block">
             <div class="line-block-title">线路策略</div>
-            <div class="line-block-text">${esc(strategyText)}</div>
+            <div class="line-block-text strategy-block">${strategyRows}</div>
           </div>
           <div class="line-block">
             <div class="line-block-title">当天问题</div>

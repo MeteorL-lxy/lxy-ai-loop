@@ -24,6 +24,14 @@ def _env(name: str, default: str) -> str:
     return str(os.getenv(name) or default).strip() or default
 
 
+def _truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _current_day() -> str:
+    return time.strftime("%F")
+
+
 LINE_CONFIGS = {
     "realtime": {
         "enabled": _env("BARRY_LOOP_REALTIME_ENABLED", "1"),
@@ -143,6 +151,9 @@ LINE_CONFIGS = {
 }
 
 
+ROLLOVER_RESET_ENABLED = _truthy(os.getenv("BARRY_LOOP_DATE_ROLLOVER_RESET_ENABLED", "0"))
+
+
 def _spawn_line(name: str, config: dict[str, object]) -> subprocess.Popen[str]:
     env = dict(os.environ)
     env["BARRY_LOOP_LINE_NAME"] = name
@@ -190,6 +201,14 @@ def main() -> int:
     children: dict[str, subprocess.Popen[str]] = {}
     completed: set[str] = set()
     stopping = False
+    generation_day = _current_day()
+    rollover_applied = False
+    waiting_for_rollover_logged = False
+    enabled_lines = {
+        name
+        for name, config in LINE_CONFIGS.items()
+        if str(config.get("enabled") or "0").strip().lower() in {"1", "true", "yes", "on"}
+    }
 
     def _stop_children() -> None:
         for proc in children.values():
@@ -226,6 +245,23 @@ def main() -> int:
 
     while not stopping:
         time.sleep(5)
+        current_day = _current_day()
+        if ROLLOVER_RESET_ENABLED and not rollover_applied and current_day != generation_day:
+            generation_day = current_day
+            rollover_applied = True
+            waiting_for_rollover_logged = False
+            completed.clear()
+            _log("检测到跨 0 点：已进入新自然日，清空上一日达标状态并按新日期重新拉起已启用线路。")
+            for name in list(children):
+                proc = children[name]
+                if proc.poll() is not None:
+                    children.pop(name, None)
+            for name in enabled_lines:
+                if name in children:
+                    continue
+                config = LINE_CONFIGS[name]
+                children[name] = _spawn_line(name, config)
+                _log(f"跨日重启 {name} worker，pid={children[name].pid}。")
         for name, config in LINE_CONFIGS.items():
             if name in completed:
                 continue
@@ -254,7 +290,14 @@ def main() -> int:
                 break
             children[name] = _spawn_line(name, config)
             _log(f"已重启 {name} worker，pid={children[name].pid}。")
-        if children and all(proc.poll() is not None for proc in children.values()):
+        all_completed = bool(enabled_lines) and completed.issuperset(enabled_lines)
+        any_running = any(proc.poll() is None for proc in children.values())
+        if all_completed and not any_running:
+            if ROLLOVER_RESET_ENABLED and not rollover_applied:
+                if not waiting_for_rollover_logged:
+                    _log("当前自然日所有已启用线路都已结束；因已开启跨 0 点自动清零，supervisor 保持待机直到日期切换。")
+                    waiting_for_rollover_logged = True
+                continue
             _log("所有已启用 worker 均已结束。")
             return 0
 

@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ REPORT_CONTINUOUS_ROOT = RUNTIME_ROOT / "reports" / "continuous-test-summary"
 ACCOUNT_POOLS_PATH = ROOT_DIR / "conf" / "account_pools.json"
 ANALYSIS_REPORT_DIR = Path("/Users/xinyuliu/Downloads/AI Loop/分析日报")
 DAILY_TOP_HISTORY_CACHE_PATH = RUNTIME_ROOT / "dashboard-cache" / "daily_top_history.json"
+SUMMARY_METRICS_CACHE_PATH = RUNTIME_ROOT / "dashboard-cache" / "summary_metrics.json"
 TREND_BASELINE_START = "2026-05-19"
 TREND_BASELINE_END = "2026-06-08"
 TREND_RUNNING_START = "2026-06-09"
@@ -652,6 +654,7 @@ class TestPoolDashboardService:
         self._cache_expires_at = 0.0
         self._cache: list[RoundArchive] = []
         self._remote_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._background_refreshing: set[str] = set()
 
     def _scan_round_archives(self) -> list[RoundArchive]:
         now_ts = datetime.now().timestamp()
@@ -1034,7 +1037,7 @@ class TestPoolDashboardService:
 
     def _fetch_publish_analysis_metrics(self, *, start_date: str = "", end_date: str = "") -> dict[str, Any]:
         cache_key = f"publish:{start_date}:{end_date}"
-        ttl = 25 if start_date or end_date else 1800
+        ttl = 90 if start_date or end_date else 1800
         cached = self._get_cached_remote(cache_key)
         if cached is not None:
             return cached
@@ -1108,7 +1111,31 @@ class TestPoolDashboardService:
             "success_accounts": len(success_accounts),
             "title_count": len(success_titles),
         }
-        return self._set_cached_remote(cache_key, 25, payload)
+        return self._set_cached_remote(cache_key, 90, payload)
+
+    def _fetch_publish_error_count(self, *, day_key: str) -> int:
+        cache_key = f"publish-records-error-count:{day_key}"
+        cached = self._get_cached_remote(cache_key)
+        if cached is not None:
+            return _safe_int(cached.get("count"))
+
+        today_start = f"{day_key} 00:00:00" if day_key else ""
+        today_end = f"{day_key} 23:59:59" if day_key else ""
+        body = require_success(
+            get_publish_records(
+                page=1,
+                page_size=1,
+                post_status=0,
+                status="ERROR",
+                social_type="FACEBOOK",
+                start_date=today_start,
+                end_date=today_end,
+            ),
+            "获取发布失败记录",
+        )
+        count = _safe_int((body.get("page") or {}).get("total_count"))
+        self._set_cached_remote(cache_key, 90, {"count": count})
+        return count
 
     def _fetch_all_my_task_rows(self, *, task_type: str = "1") -> list[dict[str, Any]]:
         cache_key = f"my-task-all:{task_type}"
@@ -1183,12 +1210,7 @@ class TestPoolDashboardService:
             "click_task_count": click_task_count,
         }
 
-    def _external_summary_metrics(self, *, today_key: str) -> dict[str, Any]:
-        cache_key = f"dashboard-summary:{today_key}"
-        cached = self._get_cached_remote(cache_key)
-        if cached is not None:
-            return cached
-
+    def _build_external_summary_metrics_payload(self, *, today_key: str) -> dict[str, Any]:
         today_start = f"{today_key} 00:00:00" if today_key else ""
         today_end = f"{today_key} 23:59:59" if today_key else ""
         metrics = {
@@ -1235,6 +1257,11 @@ class TestPoolDashboardService:
         except Exception:
             pass
         try:
+            if today_key:
+                metrics["today_records"]["failed_count"] = self._fetch_publish_error_count(day_key=today_key)
+        except Exception:
+            pass
+        try:
             if today_start and today_end:
                 metrics["today_publish"] = self._fetch_publish_analysis_metrics(
                     start_date=today_start,
@@ -1253,7 +1280,63 @@ class TestPoolDashboardService:
             metrics["today_my_task"] = self._aggregate_my_task_metrics(my_task_rows, day_key=today_key)
         except Exception:
             pass
-        return self._set_cached_remote(cache_key, 25, metrics)
+        return metrics
+
+    def _persist_summary_metrics(self, *, today_key: str, payload: dict[str, Any]) -> None:
+        _json_dump(
+            SUMMARY_METRICS_CACHE_PATH,
+            {
+                "today_key": today_key,
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+                "payload": payload,
+            },
+        )
+
+    def _refresh_external_summary_metrics_background(self, *, today_key: str, cache_key: str) -> None:
+        try:
+            payload = self._build_external_summary_metrics_payload(today_key=today_key)
+            self._set_cached_remote(cache_key, 90, payload)
+            self._persist_summary_metrics(today_key=today_key, payload=payload)
+        except Exception:
+            pass
+        finally:
+            self._background_refreshing.discard(cache_key)
+
+    def _external_summary_metrics(self, *, today_key: str) -> dict[str, Any]:
+        cache_key = f"dashboard-summary:{today_key}"
+        cached = self._get_cached_remote(cache_key)
+        if cached is not None:
+            return cached
+
+        persisted = _json_load(SUMMARY_METRICS_CACHE_PATH)
+        persisted_key = _text(persisted.get("today_key"))
+        persisted_payload = persisted.get("payload") if isinstance(persisted.get("payload"), dict) else {}
+        persisted_updated_at = _text(persisted.get("updated_at"))
+        if persisted_key == today_key and persisted_payload:
+            self._set_cached_remote(cache_key, 90, persisted_payload)
+            refresh_needed = True
+            if persisted_updated_at:
+                try:
+                    age_seconds = max(
+                        0.0,
+                        (datetime.now() - datetime.fromisoformat(persisted_updated_at)).total_seconds(),
+                    )
+                    refresh_needed = age_seconds > 30
+                except Exception:
+                    refresh_needed = True
+            if refresh_needed and cache_key not in self._background_refreshing:
+                self._background_refreshing.add(cache_key)
+                threading.Thread(
+                    target=self._refresh_external_summary_metrics_background,
+                    kwargs={"today_key": today_key, "cache_key": cache_key},
+                    daemon=True,
+                ).start()
+            return persisted_payload
+
+        payload = self._build_external_summary_metrics_payload(today_key=today_key)
+        self._set_cached_remote(cache_key, 90, payload)
+        self._persist_summary_metrics(today_key=today_key, payload=payload)
+        return payload
 
     def _fetch_publish_analysis_items(self, *, day_key: str) -> dict[str, Any]:
         cache_key = f"publish-analysis-items:{day_key}"
@@ -1441,7 +1524,9 @@ class TestPoolDashboardService:
         today_my_task = external.get("today_my_task") if isinstance(external.get("today_my_task"), dict) else {}
         requested_today_real = _safe_int(today_records.get("requested_count"), requested_today)
         success_today_real = _safe_int(today_publish.get("success_count"), _safe_int(today_records.get("success_count"), success_today))
-        failed_today_real = max(0, requested_today_real - success_today_real)
+        failed_today_real = _safe_int(today_records.get("failed_count"))
+        if failed_today_real <= 0 and requested_today_real > 0:
+            failed_today_real = max(0, requested_today_real - success_today_real)
 
         return {
             "summary_day_key": today_key,
@@ -1634,6 +1719,7 @@ class TestPoolDashboardService:
         persisted = _json_load(DAILY_TOP_HISTORY_CACHE_PATH)
         persisted_updated_at_raw = _text(persisted.get("updated_at"))
         persisted_display_end_day = _text(persisted.get("display_end_day"))
+        persisted_payload = persisted.get("payload") if isinstance(persisted.get("payload"), dict) else {}
         try:
             persisted_updated_at = datetime.fromisoformat(persisted_updated_at_raw) if persisted_updated_at_raw else None
         except Exception:
@@ -1655,6 +1741,12 @@ class TestPoolDashboardService:
         cached = self._get_cached_remote(cache_key)
         if cached is not None and not force_refresh:
             return cached
+        if (
+            not force_refresh
+            and persisted_display_end_day == display_end_day
+            and persisted_payload
+        ):
+            return self._set_cached_remote(cache_key, 300, persisted_payload)
 
         persisted_rows = persisted.get("rows") if isinstance(persisted.get("rows"), dict) else {}
         cached_rows: dict[str, dict[str, Any]] = {
@@ -1666,6 +1758,7 @@ class TestPoolDashboardService:
 
         my_task_rows = self._fetch_all_my_task_rows(task_type="1")
         task_metrics_map: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+        task_rows_by_day_app: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
         for row in my_task_rows:
             day_key = _text(row.get("actived_at"))[:10]
             if not day_key or day_key < start_day:
@@ -1701,9 +1794,76 @@ class TestPoolDashboardService:
                 "income_total": round(share_income_total, 2),
                 "order_amount": order_amount,
                 "drama_title": _text(row.get("title") or row.get("title_en") or row.get("title_ch")),
+                "app_name": _text(row.get("app_name")),
+                "actived_at": _text(row.get("actived_at")),
             }
+            app_name = _text(row.get("app_name"))
+            if app_name:
+                task_rows_by_day_app[day_key][app_name].append(task_metrics_map[day_key][task_id])
 
         account_line_map = self._build_account_line_map()
+
+        def _parse_dt(text: str) -> datetime | None:
+            value = _text(text)
+            if not value:
+                return None
+            try:
+                return datetime.fromisoformat(value.replace("T", " "))
+            except Exception:
+                return None
+
+        def _infer_app_name(item: dict[str, Any]) -> str:
+            blob = " ".join(
+                [
+                    _text(item.get("text")),
+                    _text(item.get("title")),
+                    _text(item.get("post_source")),
+                ]
+            ).lower()
+            app_map = {
+                "yourchannel_drama": "YourChannel",
+                "yourchannel": "YourChannel",
+                "touchshort": "TouchShort",
+                "moboreels": "MoboReels",
+                "goodshort": "GoodShort",
+                "dramabox": "DramaBox",
+                "shortmax": "ShortMax",
+                "flickreels": "FlickReels",
+                "kalostv": "KalosTV",
+                "snackshort": "SnackShort",
+            }
+            for token, app_name in app_map.items():
+                if token in blob:
+                    return app_name
+            return ""
+
+        def _find_nearest_task_match(day_key: str, item: dict[str, Any]) -> dict[str, Any]:
+            app_name = _infer_app_name(item)
+            if not app_name:
+                return {}
+            candidates = task_rows_by_day_app.get(day_key, {}).get(app_name, [])
+            if not candidates:
+                return {}
+            published_dt = _parse_dt(_text(item.get("post_date") or item.get("created_at")))
+            if not published_dt:
+                return {}
+            scored: list[tuple[float, dict[str, Any]]] = []
+            for candidate in candidates:
+                active_dt = _parse_dt(_text(candidate.get("actived_at")))
+                if not active_dt:
+                    continue
+                delta_seconds = abs((published_dt - active_dt).total_seconds())
+                scored.append((delta_seconds, candidate))
+            if not scored:
+                return {}
+            scored.sort(key=lambda pair: pair[0])
+            best_delta, best = scored[0]
+            second_delta = scored[1][0] if len(scored) > 1 else None
+            if best_delta > 15 * 60:
+                return {}
+            if second_delta is not None and abs(second_delta - best_delta) < 60:
+                return {}
+            return best
 
         def _sample_drama_title(item: dict[str, Any], matched_task: dict[str, Any]) -> str:
             title = _text(matched_task.get("drama_title"))
@@ -1718,10 +1878,14 @@ class TestPoolDashboardService:
         def _build_history_sample(day_key: str, item: dict[str, Any]) -> dict[str, Any]:
             task_id = _text(item.get("task_id"))
             matched_task = task_metrics_map.get(day_key, {}).get(task_id, {})
+            matched_scope = "样本任务口径"
+            if not matched_task:
+                matched_task = _find_nearest_task_match(day_key, item)
+                matched_scope = "近似匹配任务口径" if matched_task else "未匹配到样本任务"
             line_name = account_line_map.get(_text(item.get("social_id")), "")
             matched_by_task = bool(matched_task)
             return {
-                "cache_version": 3,
+                "cache_version": 4,
                 "day_key": day_key,
                 "available": True,
                 "task_id": task_id,
@@ -1747,7 +1911,7 @@ class TestPoolDashboardService:
                 "published_at": _text(item.get("post_date") or item.get("created_at")),
                 "copy_text": _text(item.get("text")) or "-",
                 "matched_task": matched_by_task,
-                "metric_scope": "样本任务口径" if matched_by_task else "未匹配到样本任务",
+                "metric_scope": matched_scope,
             }
 
         start_dt = date.fromisoformat(start_day)
@@ -1764,7 +1928,7 @@ class TestPoolDashboardService:
             use_cached = (
                 not force_refresh
                 and isinstance(cached_row, dict)
-                and _safe_int(cached_row.get("cache_version")) >= 3
+                and _safe_int(cached_row.get("cache_version")) >= 4
             )
             if use_cached:
                 row_payload = dict(cached_row)
@@ -1808,7 +1972,7 @@ class TestPoolDashboardService:
                     }
                 else:
                     row_payload = {
-                        "cache_version": 3,
+                        "cache_version": 4,
                         "day_key": day_key,
                         "available": False,
                     }
@@ -1837,6 +2001,15 @@ class TestPoolDashboardService:
                 "rows": [],
                 "summary_cards": [],
             }
+            _json_dump(
+                DAILY_TOP_HISTORY_CACHE_PATH,
+                {
+                    "updated_at": datetime.now().isoformat(timespec="seconds"),
+                    "display_end_day": display_end_day,
+                    "rows": cached_rows,
+                    "payload": payload,
+                },
+            )
             return self._set_cached_remote(cache_key, 120, payload)
 
         rows.sort(key=lambda item: _text(item.get("day_key")), reverse=True)
@@ -1909,6 +2082,15 @@ class TestPoolDashboardService:
             "rows": rows,
             "note": f"还有 {pending_backfill_days} 天历史样本待补拉。" if pending_backfill_days > 0 else "",
         }
+        _json_dump(
+            DAILY_TOP_HISTORY_CACHE_PATH,
+            {
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+                "display_end_day": display_end_day,
+                "rows": cached_rows,
+                "payload": payload,
+            },
+        )
         return self._set_cached_remote(cache_key, 300, payload)
 
     def get_weekly_effect(self, *, days: int = 7, force: bool = False) -> dict[str, Any]:
@@ -2167,6 +2349,7 @@ class TestPoolDashboardService:
         overall_summary = self._build_overall_summary(rounds)
         loop_overview = self.get_loop_overview()
         today_top_play = self.get_today_top_play(force=False) if include_today_top_play else None
+        account_groups = self._load_account_groups()
         requested = sum(row.requested_count for row in rounds)
         success = sum(row.success_count for row in rounds)
         failed = sum(row.failed_count for row in rounds)
@@ -2190,6 +2373,7 @@ class TestPoolDashboardService:
             "overall_summary": overall_summary,
             "loop_overview": loop_overview,
             "today_top_play": today_top_play,
+            "account_groups": account_groups,
         }
 
     def get_trends(self, *, days: int = 30) -> dict[str, Any]:

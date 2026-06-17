@@ -8,13 +8,72 @@ import { renderAccountGroups } from "./modules/render-account-groups.js";
 import { renderOptions } from "./modules/render-options.js";
 import { closeDrawer, loadRounds } from "./modules/rounds.js";
 
-async function refreshAll({ forceRounds = false } = {}) {
+async function loadTopPlay({ force = false } = {}) {
+  if (state.topPlayRefreshing) return;
+  state.topPlayRefreshing = true;
+  try {
+    const payload = await fetchJson(`./api/test-pool/today-top-play${force ? "?force=1" : ""}`);
+    renderTopPlay({ today_top_play: payload });
+  } catch (error) {
+    console.error(error);
+  } finally {
+    state.topPlayRefreshing = false;
+  }
+}
+
+async function loadHeavyPanels({ refreshTrend = false, refreshDailyHistory = false } = {}) {
+  try {
+    const [trendAnalyzer, dailyTopHistory] = await Promise.all([
+      fetchJson(`./api/test-pool/trend-analyzer${refreshTrend ? "?refresh=1" : ""}`),
+      fetchJson(`./api/test-pool/daily-top-history${refreshDailyHistory ? "?force=1" : ""}`),
+    ]);
+
+    renderHistory({ trend_analyzer: trendAnalyzer });
+    renderDailyTopHistory({ daily_top_history: dailyTopHistory });
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+async function refreshRealtimePanels() {
+  if (state.refreshing || state.realtimeRefreshing) return;
+  state.realtimeRefreshing = true;
+  qs("status-text").textContent = "刷新中";
+  try {
+    const [overview, failures] = await Promise.all([
+      fetchJson("./api/test-pool/realtime-overview?days=30&include_today_top_play=0"),
+      fetchJson("./api/test-pool/failures?limit=80"),
+    ]);
+
+    renderOverall(overview);
+    renderToday(overview);
+    renderLineCards(overview, failures);
+    renderAccountGroups(overview.account_groups || []);
+
+    qs("status-text").textContent = "已连接";
+    qs("db-path").textContent = overview.db_path || qs("db-path").textContent || "-";
+    qs("last-updated").textContent = fmtDateTime(overview.last_exported_at);
+  } catch (error) {
+    showError(error);
+  } finally {
+    state.realtimeRefreshing = false;
+  }
+
+  loadTopPlay().catch((error) => console.error(error));
+}
+
+async function refreshAll({
+  forceRounds = false,
+  refreshTrend = false,
+  refreshDailyHistory = false,
+  forceTopPlay = false,
+} = {}) {
   if (state.refreshing || state.realtimeRefreshing) return;
   state.refreshing = true;
   qs("status-text").textContent = "刷新中";
   try {
     const requests = [
-      fetchJson("./api/test-pool/overview?days=30"),
+      fetchJson("./api/test-pool/realtime-overview?days=30&include_today_top_play=0"),
       fetchJson("./api/test-pool/failures?limit=80"),
     ];
     if (!state.optionsLoaded) {
@@ -26,9 +85,6 @@ async function refreshAll({ forceRounds = false } = {}) {
     renderOverall(overview);
     renderToday(overview);
     renderLineCards(overview, failures);
-    renderTopPlay(overview);
-    renderDailyTopHistory(overview);
-    renderHistory(overview);
     renderAccountGroups(overview.account_groups || []);
 
     if (options) {
@@ -49,35 +105,17 @@ async function refreshAll({ forceRounds = false } = {}) {
   } finally {
     state.refreshing = false;
   }
-}
 
-async function refreshRealtimePanels() {
-  if (state.refreshing || state.realtimeRefreshing) return;
-  state.realtimeRefreshing = true;
-  qs("status-text").textContent = "刷新中";
-  try {
-    const [overview, failures] = await Promise.all([
-      fetchJson("./api/test-pool/realtime-overview?days=30"),
-      fetchJson("./api/test-pool/failures?limit=80"),
-    ]);
-
-    renderToday(overview);
-    renderLineCards(overview, failures);
-    renderTopPlay(overview);
-
-    qs("status-text").textContent = "已连接";
-    qs("db-path").textContent = overview.db_path || qs("db-path").textContent || "-";
-    qs("last-updated").textContent = fmtDateTime(overview.last_exported_at);
-  } catch (error) {
-    showError(error);
-  } finally {
-    state.realtimeRefreshing = false;
-  }
+  loadTopPlay({ force: forceTopPlay }).catch((error) => console.error(error));
+  loadHeavyPanels({ refreshTrend, refreshDailyHistory }).catch((error) => console.error(error));
 }
 
 function bindEvents() {
   qs("refresh-btn").addEventListener("click", () => {
-    refreshAll({ forceRounds: qs("rounds-panel").open }).catch((error) => console.error(error));
+    refreshAll({
+      forceRounds: qs("rounds-panel").open,
+      forceTopPlay: true,
+    }).catch((error) => console.error(error));
   });
 
   qs("search-btn").addEventListener("click", () => {

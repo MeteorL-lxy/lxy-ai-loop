@@ -18,6 +18,7 @@ from flywheel.clipping.ai_cut_animation import (
     create_short_drama_clip_task,
     DEFAULT_AUTO_CLIP_ENABLED,
     DEFAULT_MAX_EPISODES_PER_SERIAL,
+    DEFAULT_MIN_TASK_TIMEOUT,
     DEFAULT_MAX_TOTAL_DURATION_SECONDS,
     DEFAULT_PROCESS_CONCURRENCY,
     DEFAULT_SEGMENT_MAX_SECONDS,
@@ -79,6 +80,14 @@ def _compose_caption_with_intro(base_text: str, promotion_link: str) -> str:
     if not body:
         return intro
     return f"{intro}\n{body}"
+
+
+def _effective_ai_task_timeout(requested_timeout: object) -> int:
+    try:
+        requested = int(float(requested_timeout or 0))
+    except (TypeError, ValueError):
+        requested = 0
+    return max(DEFAULT_MIN_TASK_TIMEOUT, requested)
 
 
 def bind(ctx):
@@ -1733,13 +1742,97 @@ def _download_remote_media_via_ffmpeg(*, video_url: str, output_path: Path) -> P
     return output_path
 
 
+def _download_lock_path(output_path: Path) -> Path:
+    return output_path.with_name(f"{output_path.name}.lock")
+
+
+def _partial_download_path(output_path: Path) -> Path:
+    return output_path.with_name(f"{output_path.name}.partial")
+
+
+def _acquire_download_lock(lock_path: Path, *, stale_seconds: int = 1800) -> bool:
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+        return True
+    except FileExistsError:
+        try:
+            age = time.time() - lock_path.stat().st_mtime
+        except FileNotFoundError:
+            return False
+        if age > max(60, int(stale_seconds or 1800)):
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                return False
+            except OSError:
+                return False
+            try:
+                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+                return True
+            except FileExistsError:
+                return False
+        return False
+
+
+def _wait_for_downloaded_source(
+    output_path: Path,
+    *,
+    wait_seconds: int = 180,
+    poll_interval_seconds: float = 0.5,
+) -> Path:
+    deadline = time.time() + max(5, int(wait_seconds or 180))
+    partial_path = _partial_download_path(output_path)
+    lock_path = _download_lock_path(output_path)
+    while time.time() < deadline:
+        if output_path.exists() and output_path.stat().st_size > 0:
+            return output_path
+        if not lock_path.exists() and not partial_path.exists():
+            break
+        time.sleep(max(0.1, float(poll_interval_seconds or 0.5)))
+    raise RuntimeError(f"等待外部素材下载完成超时: {output_path.name}")
+
+
 def _ensure_remote_media_source(*, video_url: str, output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists() and output_path.stat().st_size > 0:
         return output_path
-    if _is_hls_url(video_url):
-        return _download_remote_media_via_ffmpeg(video_url=video_url, output_path=output_path)
-    return _ensure_external_source_file(video_url=video_url, output_path=output_path)
+    lock_path = _download_lock_path(output_path)
+    partial_path = _partial_download_path(output_path)
+    if not _acquire_download_lock(lock_path):
+        return _wait_for_downloaded_source(output_path)
+    try:
+        if output_path.exists() and output_path.stat().st_size > 0:
+            return output_path
+        try:
+            if partial_path.exists():
+                partial_path.unlink()
+        except FileNotFoundError:
+            pass
+        if _is_hls_url(video_url):
+            downloaded = _download_remote_media_via_ffmpeg(video_url=video_url, output_path=partial_path)
+        else:
+            downloaded = _ensure_external_source_file(video_url=video_url, output_path=partial_path)
+        downloaded = Path(downloaded).expanduser().resolve()
+        if downloaded != partial_path:
+            partial_path = downloaded
+        if not partial_path.exists() or partial_path.stat().st_size <= 0:
+            raise RuntimeError(f"远程素材下载失败，未生成有效文件: {output_path.name}")
+        partial_path.replace(output_path)
+        return output_path
+    except Exception:
+        try:
+            if partial_path.exists():
+                partial_path.unlink()
+        except OSError:
+            pass
+        raise
+    finally:
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _external_segment_window(*, drama: dict, clip_duration: int) -> tuple[int, int]:
@@ -2055,6 +2148,7 @@ def _clip_batch_item(item: dict, args: argparse.Namespace, config) -> dict:
     ).strip()
     if not app_id or not third_serial_id:
         raise RuntimeError("ai-cut 剪辑缺少 app_id 或 third_serial_id")
+    ai_task_timeout = _effective_ai_task_timeout(args.timeout)
     task_create = create_short_drama_clip_task(
         app_id=app_id,
         third_serial_ids=[third_serial_id],
@@ -2096,7 +2190,7 @@ def _clip_batch_item(item: dict, args: argparse.Namespace, config) -> dict:
         raise RuntimeError(f"ai-cut 创建任务未返回 task_id: {json.dumps(task_create, ensure_ascii=False)}")
     task_body = wait_for_short_drama_clip_task(
         task_id,
-        timeout=args.timeout,
+        timeout=ai_task_timeout,
         poll_interval=args.poll_interval,
         request_timeout=args.submit_timeout,
     )
@@ -2109,7 +2203,7 @@ def _clip_batch_item(item: dict, args: argparse.Namespace, config) -> dict:
         task_id,
         third_serial_id=third_serial_id,
         preferred_episode_order=episode_order,
-        timeout=args.timeout,
+        timeout=ai_task_timeout,
         poll_interval=args.poll_interval,
         request_timeout=args.submit_timeout,
         initial_task_body=task_body,

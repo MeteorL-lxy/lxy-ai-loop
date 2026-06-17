@@ -21,9 +21,11 @@ export function renderDailyTopHistory(overview) {
       : "";
     return `
       <article class="history-sample-card">
-        <div class="history-sample-label">${esc(card.label || "-")}</div>
-        <div class="history-sample-value">${esc(fmtTrendValue(card.value, card.kind))}</div>
-        ${note}
+        <div class="history-sample-top">
+          <div class="history-sample-label">${esc(card.label || "-")}</div>
+          <div class="history-sample-value">${esc(fmtTrendValue(card.value, card.kind))}</div>
+          ${note}
+        </div>
         ${metaRows}
       </article>
     `;
@@ -31,6 +33,7 @@ export function renderDailyTopHistory(overview) {
 
   const rows = payload.rows || [];
   node.innerHTML = `
+    ${payload.note ? `<div class="history-inline-note">${esc(payload.note)}</div>` : ""}
     <div class="history-card-grid-sample">
       ${summaryCards}
     </div>

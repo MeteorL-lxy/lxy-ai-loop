@@ -72,6 +72,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/test-pool/trend-analyzer":
                 refresh = str(query.get("refresh", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
                 payload = self.service.get_trend_analyzer(refresh=refresh)
+            elif parsed.path == "/api/test-pool/daily-top-history":
+                force = str(query.get("force", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+                payload = self.service.get_daily_top_play_history(force=force)
             elif parsed.path == "/api/test-pool/options":
                 payload = self.service.get_options()
             elif parsed.path == "/api/test-pool/rounds":

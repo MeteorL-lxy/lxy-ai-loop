@@ -2,6 +2,7 @@ export const state = {
   autoRefreshMs: 30000,
   refreshing: false,
   realtimeRefreshing: false,
+  topPlayRefreshing: false,
   optionsLoaded: false,
   roundsLoaded: false,
   page: 1,

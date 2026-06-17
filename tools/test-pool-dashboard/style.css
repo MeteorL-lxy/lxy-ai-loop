@@ -476,6 +476,32 @@ body {
   word-break: break-word;
 }
 
+.strategy-block {
+  display: grid;
+  gap: 10px;
+}
+
+.strategy-row {
+  display: grid;
+  grid-template-columns: 60px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.strategy-k {
+  font-size: 13px;
+  font-weight: 900;
+  color: var(--text);
+}
+
+.strategy-v {
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text);
+  word-break: break-word;
+}
+
 .issue-list {
   display: flex;
   flex-direction: column;
@@ -693,7 +719,7 @@ body {
 
 .history-card-grid-sample {
   display: grid;
-  grid-template-columns: minmax(220px, 0.9fr) repeat(3, minmax(280px, 1fr));
+  grid-template-columns: repeat(4, minmax(240px, 1fr));
   gap: 14px;
 }
 
@@ -703,6 +729,13 @@ body {
   border-radius: 20px;
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.96);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.history-sample-top {
+  min-width: 0;
 }
 
 .history-sample-label {
@@ -745,6 +778,17 @@ body {
   margin-top: 16px;
 }
 
+.history-inline-note {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px dashed var(--line-strong);
+  background: rgba(241, 246, 255, 0.78);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
 .daily-history-table {
   min-width: 1380px;
 }
@@ -762,7 +806,7 @@ body {
 }
 
 .daily-col-copy {
-  width: 420px;
+  width: 360px;
 }
 
 .daily-col-publish {
