@@ -4,6 +4,7 @@ import { renderOverall, renderToday } from "./modules/render-overview.js";
 import { renderLineCards } from "./modules/render-lines.js";
 import { renderTopPlay } from "./modules/render-top-play.js";
 import { renderDailyTopHistory, renderHistory } from "./modules/render-history.js";
+import { renderLineCumulative } from "./modules/render-line-cumulative.js";
 import { renderAccountGroups } from "./modules/render-account-groups.js";
 import { renderOptions } from "./modules/render-options.js";
 import { closeDrawer, loadRounds } from "./modules/rounds.js";
@@ -22,17 +23,29 @@ async function loadTopPlay({ force = false } = {}) {
   }
 }
 
-async function loadHeavyPanels({ refreshTrend = false, refreshDailyHistory = false } = {}) {
-  try {
-    const [trendAnalyzer, dailyTopHistory] = await Promise.all([
-      fetchJson(`./api/test-pool/trend-analyzer${refreshTrend ? "?refresh=1" : ""}`),
-      fetchJson(`./api/test-pool/daily-top-history${refreshDailyHistory ? "?force=1" : ""}`),
-    ]);
+async function loadHeavyPanels({ refreshTrend = false, refreshDailyHistory = false, refreshLineCumulative = false } = {}) {
+  const [trendAnalyzer, dailyTopHistory, lineCumulative] = await Promise.allSettled([
+    fetchJson(`./api/test-pool/trend-analyzer${refreshTrend ? "?refresh=1" : ""}`),
+    fetchJson(`./api/test-pool/daily-top-history${refreshDailyHistory ? "?force=1" : ""}`),
+    fetchJson(`./api/test-pool/line-cumulative${refreshLineCumulative ? "?force=1" : ""}`),
+  ]);
 
-    renderHistory({ trend_analyzer: trendAnalyzer });
-    renderDailyTopHistory({ daily_top_history: dailyTopHistory });
-  } catch (error) {
-    console.error(error);
+  if (trendAnalyzer.status === "fulfilled") {
+    renderHistory({ trend_analyzer: trendAnalyzer.value });
+  } else {
+    console.error(trendAnalyzer.reason);
+  }
+
+  if (dailyTopHistory.status === "fulfilled") {
+    renderDailyTopHistory({ daily_top_history: dailyTopHistory.value });
+  } else {
+    console.error(dailyTopHistory.reason);
+  }
+
+  if (lineCumulative.status === "fulfilled") {
+    renderLineCumulative({ line_cumulative: lineCumulative.value });
+  } else {
+    console.error(lineCumulative.reason);
   }
 }
 
@@ -67,6 +80,7 @@ async function refreshAll({
   forceRounds = false,
   refreshTrend = false,
   refreshDailyHistory = false,
+  refreshLineCumulative = false,
   forceTopPlay = false,
 } = {}) {
   if (state.refreshing || state.realtimeRefreshing) return;
@@ -108,7 +122,7 @@ async function refreshAll({
   }
 
   loadTopPlay({ force: forceTopPlay }).catch((error) => console.error(error));
-  loadHeavyPanels({ refreshTrend, refreshDailyHistory }).catch((error) => console.error(error));
+  loadHeavyPanels({ refreshTrend, refreshDailyHistory, refreshLineCumulative }).catch((error) => console.error(error));
 }
 
 function bindEvents() {
@@ -116,6 +130,7 @@ function bindEvents() {
     refreshAll({
       forceRounds: qs("rounds-panel").open,
       refreshTrend: true,
+      refreshLineCumulative: true,
       forceTopPlay: true,
     }).catch((error) => console.error(error));
   });

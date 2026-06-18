@@ -2,6 +2,7 @@
   "facebook_drama_realtime_pool": {
     "platform": "FACEBOOK",
     "description": "夜间实时榜账号池，承接实时榜外部素材主线。",
+    "target_count": 30,
     "account_ids": [
       "1031",
       "1028",
@@ -22,7 +23,6 @@
       "1754",
       "1753",
       "1751",
-      "1746",
       "1745",
       "1744",
       "1742",
@@ -32,12 +32,14 @@
       "1752",
       "1750",
       "1749",
-      "1748"
+      "1748",
+      "4240"
     ]
   },
   "facebook_drama_realtime_single_pool": {
     "platform": "FACEBOOK",
     "description": "夜间实时榜定账号池，同一素材固定单账号连续消耗。",
+    "target_count": 20,
     "account_ids": [
       "2522",
       "2519",
@@ -50,20 +52,21 @@
       "2511",
       "2512",
       "2507",
-      "2509",
       "2505",
       "2504",
-      "1743",
       "4250",
       "4249",
       "4248",
       "4247",
-      "4246"
+      "4246",
+      "4239",
+      "4238"
     ]
   },
   "facebook_drama_realtime_day_pool": {
     "platform": "FACEBOOK",
     "description": "白天实时榜账号池，12:00-18:00 手动窗口使用。",
+    "target_count": 20,
     "account_ids": [
       "2553",
       "2550",
@@ -89,7 +92,8 @@
   },
   "facebook_drama_creative_list_pool": {
     "platform": "FACEBOOK",
-    "description": "夜间创意列表外部素材映射线账号池。",
+    "description": "夜间创意列表外部素材映射线账号池。当前已暂停，不参与默认夜间运行与自动补池。",
+    "target_count": 0,
     "account_ids": [
       "3129",
       "3130",
@@ -110,7 +114,8 @@
   },
   "facebook_drama_creative_list_day_pool": {
     "platform": "FACEBOOK",
-    "description": "白天创意列表外部素材映射线账号池。",
+    "description": "白天创意列表外部素材映射线账号池。当前已暂停，不参与默认白天运行与自动补池。",
+    "target_count": 0,
     "account_ids": [
       "3116",
       "3114",
@@ -132,6 +137,7 @@
   "facebook_drama_ordinary_pool": {
     "platform": "FACEBOOK",
     "description": "普通池账号池，主要承接北斗官方短剧 ai-cut 主线。",
+    "target_count": 15,
     "account_ids": [
       "3145",
       "3144",
@@ -147,12 +153,13 @@
       "3133",
       "3134",
       "3131",
-      "891"
+      "4237"
     ]
   },
   "facebook_drama_fbhot_test_pool": {
     "platform": "FACEBOOK",
     "description": "FB 热测线账号池，承接热度优先短剧实验。",
+    "target_count": 20,
     "account_ids": [
       "2533",
       "2537",
@@ -179,6 +186,7 @@
   "facebook_drama_yourchannel_pool": {
     "platform": "FACEBOOK",
     "description": "YourChannel 剧场线专用池，使用白名单剧名与剧场专属策略。",
+    "target_count": 20,
     "account_ids": [
       "3406",
       "3407",
@@ -205,6 +213,7 @@
   "facebook_drama_recent_order_pool": {
     "platform": "FACEBOOK",
     "description": "近月出单剧线账号池，按表格轮转剧名与剧场，使用官方视频 FFmpeg 30 秒快切。",
+    "target_count": 15,
     "account_ids": [
       "4265",
       "4263",
@@ -219,13 +228,16 @@
       "4244",
       "4243",
       "4242",
-      "4241"
+      "4241",
+      "4236"
     ]
   },
   "facebook_drama_exception_pool": {
     "platform": "FACEBOOK",
     "description": "短剧异常账号暂存池，供人工复核其他异常账号使用。",
-    "account_ids": []
+    "account_ids": [
+      "891"
+    ]
   },
   "facebook_drama_reel_block_pool": {
     "platform": "FACEBOOK",
@@ -254,18 +266,16 @@
       "1032",
       "2552",
       "2525",
-      "4264"
+      "4264",
+      "1746",
+      "1743",
+      "2509"
     ]
   },
   "facebook_drama_reserve_pool": {
     "platform": "FACEBOOK",
     "description": "短剧备用账号池，保存暂未分配到执行线的剩余账号。",
     "account_ids": [
-      "4240",
-      "4239",
-      "4238",
-      "4237",
-      "4236",
       "4235",
       "4234",
       "4233",

@@ -91,7 +91,9 @@ export async function openRoundDetail(archiveKey) {
         <td>${esc(item.title || "-")}</td>
         <td>${esc(item.source_mode || "-")}</td>
         <td>${esc(item.clip_method || "-")}</td>
-        <td>${esc(statusLabel(item.publish_status))}</td>
+        <td class="detail-status-cell">
+          <span class="status-pill ${esc(statusTone(item.publish_status))}">${esc(statusLabel(item.publish_status))}</span>
+        </td>
         <td>
           <div class="detail-failure-scroll">${esc(item.failure_reason || "-")}</div>
         </td>

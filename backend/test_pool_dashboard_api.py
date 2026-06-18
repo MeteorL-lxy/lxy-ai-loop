@@ -27,6 +27,7 @@ ANALYSIS_REPORT_DIR = Path("/Users/xinyuliu/Downloads/AI Loop/分析日报")
 DAILY_TOP_HISTORY_CACHE_PATH = RUNTIME_ROOT / "dashboard-cache" / "daily_top_history.json"
 SUMMARY_METRICS_CACHE_PATH = RUNTIME_ROOT / "dashboard-cache" / "summary_metrics.json"
 TREND_ANALYZER_CACHE_PATH = RUNTIME_ROOT / "dashboard-cache" / "trend_analyzer.json"
+LINE_CUMULATIVE_CACHE_PATH = RUNTIME_ROOT / "dashboard-cache" / "line_cumulative_totals.json"
 TREND_BASELINE_START = "2026-05-19"
 TREND_BASELINE_END = "2026-06-08"
 TREND_RUNNING_START = "2026-06-09"
@@ -2203,6 +2204,405 @@ class TestPoolDashboardService:
             },
         )
         return self._set_cached_remote(cache_key, 300, payload)
+
+    def _build_line_cumulative_totals_payload(self, *, start_day: str, end_day: str) -> dict[str, Any]:
+        line_order = [
+            "realtime_day",
+            "creative_list_day",
+            "yourchannel",
+            "realtime",
+            "recent_order",
+            "realtime_single",
+            "creative_list",
+            "ordinary",
+            "fbhot_test",
+        ]
+        account_groups = self._load_account_groups()
+        account_line_map = self._build_account_line_map()
+        line_account_counts: dict[str, int] = {}
+        for group in account_groups:
+            group_key = _text(group.get("key"))
+            mapped_line = next((key for key, pool_key in LINE_POOL_KEYS.items() if pool_key == group_key), "")
+            if mapped_line:
+                line_account_counts[mapped_line] = _safe_int(group.get("count"))
+
+        def _new_bucket(line_name: str, *, label_override: str = "") -> dict[str, Any]:
+            return {
+                "line_name": line_name,
+                "line_label": label_override or LINE_DISPLAY_NAMES.get(line_name) or "待识别线路",
+                "account_count": _safe_int(line_account_counts.get(line_name)),
+                "post_count": 0,
+                "view_total": 0,
+                "click_total": 0,
+                "income_total": 0.0,
+                "interaction_total": 0,
+                "like_total": 0,
+                "comment_total": 0,
+                "share_total": 0,
+                "matched_task_count": 0,
+                "unmatched_task_count": 0,
+            }
+
+        buckets: dict[str, dict[str, Any]] = {
+            line_name: _new_bucket(line_name)
+            for line_name in line_order
+        }
+
+        my_task_rows = self._fetch_all_my_task_rows(task_type="1")
+        task_metrics_map: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+        task_rows_by_day_app: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
+        task_rows_by_day_app_title: dict[str, dict[str, dict[str, list[dict[str, Any]]]]] = defaultdict(
+            lambda: defaultdict(lambda: defaultdict(list))
+        )
+        def _normalize_match_text(value: Any) -> str:
+            text = _text(value).lower()
+            text = re.sub(r"https?://\S+", " ", text)
+            text = re.sub(r"[^\w\u4e00-\u9fff]+", "", text)
+            return text
+
+        for index, row in enumerate(my_task_rows):
+            day_key = _text(row.get("actived_at"))[:10]
+            if not day_key or day_key < start_day or day_key > end_day:
+                continue
+            task_id = _text(row.get("task_id"))
+            platform_rows = row.get("platform_list") if isinstance(row.get("platform_list"), list) else []
+            facebook_row = next(
+                (
+                    item for item in platform_rows
+                    if isinstance(item, dict) and _safe_int(item.get("platform")) == 2
+                ),
+                {},
+            )
+            task_metric = {
+                "_match_id": task_id or f"task-row-{index}",
+                "task_id": task_id,
+                "actived_at": _text(row.get("actived_at")),
+                "app_name": _text(row.get("app_name")),
+                "drama_title": _text(row.get("title") or row.get("title_en") or row.get("title_ch")),
+                "click_total": _safe_int(row.get("click_count")),
+                "share_income_total": round(
+                    _safe_float(facebook_row.get("share_amount"), _safe_float(row.get("share_amount"))),
+                    2,
+                ),
+                "ad_income_total": round(
+                    _safe_float(facebook_row.get("ad_amount"), _safe_float(row.get("ad_amount"))),
+                    2,
+                ),
+                "income_total": round(
+                    _safe_float(facebook_row.get("share_amount"), _safe_float(row.get("share_amount"))),
+                    2,
+                ),
+            }
+            if task_id:
+                task_metrics_map[day_key][task_id] = task_metric
+            app_name = _text(row.get("app_name"))
+            if app_name:
+                task_rows_by_day_app[day_key][app_name].append(task_metric)
+                title_key = _normalize_match_text(task_metric.get("drama_title"))
+                if title_key:
+                    task_rows_by_day_app_title[day_key][app_name][title_key].append(task_metric)
+
+        def _parse_dt(text: str) -> datetime | None:
+            value = _text(text)
+            if not value:
+                return None
+            try:
+                return datetime.fromisoformat(value.replace("T", " "))
+            except Exception:
+                return None
+
+        def _infer_app_name(item: dict[str, Any]) -> str:
+            blob = " ".join(
+                [
+                    _text(item.get("text")),
+                    _text(item.get("title")),
+                    _text(item.get("post_source")),
+                ]
+            ).lower()
+            app_map = {
+                "yourchannel_drama": "YourChannel",
+                "yourchannel": "YourChannel",
+                "touchshort": "TouchShort",
+                "moboreels": "MoboReels",
+                "goodshort": "GoodShort",
+                "dramabox": "DramaBox",
+                "shortmax": "ShortMax",
+                "flickreels": "FlickReels",
+                "kalostv": "KalosTV",
+                "snackshort": "SnackShort",
+            }
+            for token, app_name in app_map.items():
+                if token in blob:
+                    return app_name
+            return ""
+
+        def _extract_promoted_title_from_copy(item: dict[str, Any]) -> str:
+            text = _text(item.get("text"))
+            if not text:
+                return ""
+            quoted = re.findall(r"[\"“”](.{2,160}?)[\"“”]", text)
+            if quoted:
+                cleaned = []
+                for chunk in quoted:
+                    candidate = _text(chunk)
+                    lowered = candidate.lower()
+                    if "http" in lowered or "app" in lowered or "episode" in lowered or "series" in lowered:
+                        continue
+                    cleaned.append(candidate)
+                if cleaned:
+                    return cleaned[-1]
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            for line in reversed(lines):
+                if "look up" in line.lower() or "busca" in line.lower() or "search" in line.lower():
+                    parts = re.findall(r"[\"“”](.{2,160}?)[\"“”]", line)
+                    if parts:
+                        return _text(parts[-1])
+            return ""
+
+        def _find_nearest_task_match(day_key: str, item: dict[str, Any], used_match_ids: set[str]) -> dict[str, Any]:
+            app_name = _infer_app_name(item)
+            if not app_name:
+                return {}
+            published_dt = _parse_dt(_text(item.get("post_date") or item.get("created_at")))
+            if not published_dt:
+                return {}
+            promoted_title = _extract_promoted_title_from_copy(item)
+            title_key = _normalize_match_text(promoted_title)
+            if title_key:
+                title_candidates = task_rows_by_day_app_title.get(day_key, {}).get(app_name, {}).get(title_key, [])
+                scored_title: list[tuple[float, dict[str, Any]]] = []
+                for candidate in title_candidates:
+                    match_id = _text(candidate.get("_match_id"))
+                    if match_id in used_match_ids:
+                        continue
+                    active_dt = _parse_dt(_text(candidate.get("actived_at")))
+                    if not active_dt:
+                        continue
+                    delta_seconds = abs((published_dt - active_dt).total_seconds())
+                    scored_title.append((delta_seconds, candidate))
+                if scored_title:
+                    scored_title.sort(key=lambda pair: pair[0])
+                    best_delta, best = scored_title[0]
+                    if best_delta <= 6 * 60 * 60:
+                        return best
+
+            candidates = task_rows_by_day_app.get(day_key, {}).get(app_name, [])
+            if not candidates:
+                return {}
+            scored: list[tuple[float, dict[str, Any]]] = []
+            for candidate in candidates:
+                match_id = _text(candidate.get("_match_id"))
+                if match_id in used_match_ids:
+                    continue
+                active_dt = _parse_dt(_text(candidate.get("actived_at")))
+                if not active_dt:
+                    continue
+                delta_seconds = abs((published_dt - active_dt).total_seconds())
+                scored.append((delta_seconds, candidate))
+            if not scored:
+                return {}
+            scored.sort(key=lambda pair: pair[0])
+            best_delta, best = scored[0]
+            second_delta = scored[1][0] if len(scored) > 1 else None
+            if best_delta > 15 * 60:
+                return {}
+            if second_delta is not None and abs(second_delta - best_delta) < 60:
+                return {}
+            return best
+
+        start_date = f"{start_day} 00:00:00"
+        end_date = f"{end_day} 23:59:59"
+        used_match_ids: set[str] = set()
+        page_size = 200
+        page = 1
+        total_count = 0
+        partial_note = ""
+        while page <= 120:
+            body: dict[str, Any] | None = None
+            last_error: Exception | None = None
+            for _attempt in range(3):
+                try:
+                    body = require_success(
+                        get_publish_analysis(
+                            page=page,
+                            page_size=page_size,
+                            social_type="FACEBOOK",
+                            start_date=start_date,
+                            end_date=end_date,
+                        ),
+                        "获取线路累计播放分析明细",
+                    )
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    time.sleep(1.2)
+            if body is None:
+                if page > 1:
+                    partial_note = f"发布分析在第 {page} 页后中断，本次先展示已成功拉到的累计结果。"
+                    break
+                raise last_error or RuntimeError("获取线路累计播放分析明细失败")
+            page_rows = body.get("items") if isinstance(body.get("items"), list) else []
+            total_count = _safe_int((body.get("page") or {}).get("total_count"))
+            if not page_rows:
+                break
+            for item in page_rows:
+                if not isinstance(item, dict):
+                    continue
+                day_key = _text(item.get("post_date") or item.get("created_at"))[:10]
+                if not day_key or day_key < start_day or day_key > end_day:
+                    continue
+                line_name = account_line_map.get(_text(item.get("social_id")), "")
+                if not line_name:
+                    continue
+                bucket = buckets.setdefault(line_name, _new_bucket(line_name))
+                view_count = _safe_int(item.get("views"))
+                like_count = _safe_int(item.get("likes"))
+                comment_count = _safe_int(item.get("comments"))
+                share_count = _safe_int(item.get("shares"))
+                interaction_total = like_count + comment_count + share_count
+                bucket["post_count"] += 1
+                bucket["view_total"] += view_count
+                bucket["interaction_total"] += interaction_total
+                bucket["like_total"] += like_count
+                bucket["comment_total"] += comment_count
+                bucket["share_total"] += share_count
+
+                matched_task: dict[str, Any] = {}
+                item_task_id = _text(item.get("task_id"))
+                if item_task_id:
+                    exact_task = task_metrics_map.get(day_key, {}).get(item_task_id, {})
+                    exact_match_id = _text(exact_task.get("_match_id"))
+                    if exact_task and exact_match_id and exact_match_id not in used_match_ids:
+                        matched_task = exact_task
+                if not matched_task:
+                    matched_task = _find_nearest_task_match(day_key, item, used_match_ids)
+                match_id = _text(matched_task.get("_match_id"))
+                if match_id:
+                    used_match_ids.add(match_id)
+                    bucket["matched_task_count"] += 1
+                    bucket["click_total"] += _safe_int(matched_task.get("click_total"))
+                    bucket["income_total"] = round(
+                        _safe_float(bucket.get("income_total")) + _safe_float(matched_task.get("income_total")),
+                        2,
+                    )
+            if total_count and page * page_size >= total_count:
+                break
+            page += 1
+
+        candidate_names = [line_name for line_name in line_order if line_name in buckets]
+
+        rows = []
+        for line_name in candidate_names:
+            bucket = dict(buckets[line_name])
+            rows.append(
+                {
+                    **bucket,
+                    "income_total": round(_safe_float(bucket.get("income_total")), 2),
+                }
+            )
+
+        rows.sort(
+            key=lambda row: (
+                -_safe_int(row.get("view_total")),
+                -_safe_int(row.get("click_total")),
+                -_safe_float(row.get("income_total")),
+                row.get("line_label") or "",
+            )
+        )
+
+        return {
+            "available": True,
+            "start_day": start_day,
+            "end_day": end_day,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "total_rows": len(rows),
+            "total_posts": total_count,
+            "rows": rows,
+            "note": (
+                ("只统计当前线路账号池里现有账号的数据；播放/互动按发布分析明细累计；点击/收益按 my_task 任务口径匹配回当前线路。 " + partial_note).strip()
+                if partial_note
+                else "只统计当前线路账号池里现有账号的数据；播放/互动按发布分析明细累计；点击/收益按 my_task 任务口径匹配回当前线路。"
+            ),
+        }
+
+    def _refresh_line_cumulative_totals_background(self, *, start_day: str, end_day: str, cache_key: str) -> None:
+        try:
+            payload = self._build_line_cumulative_totals_payload(start_day=start_day, end_day=end_day)
+            self._set_cached_remote(cache_key, 600, payload)
+            _json_dump(
+                LINE_CUMULATIVE_CACHE_PATH,
+                {
+                    "start_day": start_day,
+                    "end_day": end_day,
+                    "updated_at": datetime.now().isoformat(timespec="seconds"),
+                    "payload": payload,
+                },
+            )
+        except Exception:
+            pass
+        finally:
+            self._background_refreshing.discard(cache_key)
+
+    def get_line_cumulative_totals(self, *, start_day: str = DAILY_TOP_HISTORY_START, force: bool = False) -> dict[str, Any]:
+        end_day = _today_key()
+        cache_key = f"line-cumulative:{start_day}:{end_day}"
+        if force:
+            self._remote_cache.pop(cache_key, None)
+
+        cached = self._get_cached_remote(cache_key)
+        if cached is not None and not force:
+            return cached
+
+        persisted = _json_load(LINE_CUMULATIVE_CACHE_PATH)
+        persisted_start_day = _text(persisted.get("start_day"))
+        persisted_end_day = _text(persisted.get("end_day"))
+        persisted_payload = persisted.get("payload") if isinstance(persisted.get("payload"), dict) else {}
+        persisted_rows = persisted_payload.get("rows") if isinstance(persisted_payload.get("rows"), list) else []
+        has_legacy_unmapped = any(
+            isinstance(row, dict) and _text(row.get("line_name")) == "unmapped"
+            for row in persisted_rows
+        )
+        persisted_updated_at_raw = _text(persisted.get("updated_at"))
+        try:
+            persisted_updated_at = datetime.fromisoformat(persisted_updated_at_raw) if persisted_updated_at_raw else None
+        except Exception:
+            persisted_updated_at = None
+
+        if (
+            not force
+            and persisted_start_day == start_day
+            and persisted_end_day == end_day
+            and persisted_payload
+            and not has_legacy_unmapped
+        ):
+            self._set_cached_remote(cache_key, 600, persisted_payload)
+            refresh_needed = True
+            if persisted_updated_at:
+                try:
+                    refresh_needed = (datetime.now() - persisted_updated_at).total_seconds() > 600
+                except Exception:
+                    refresh_needed = True
+            if refresh_needed and cache_key not in self._background_refreshing:
+                self._background_refreshing.add(cache_key)
+                threading.Thread(
+                    target=self._refresh_line_cumulative_totals_background,
+                    kwargs={"start_day": start_day, "end_day": end_day, "cache_key": cache_key},
+                    daemon=True,
+                ).start()
+            return persisted_payload
+
+        payload = self._build_line_cumulative_totals_payload(start_day=start_day, end_day=end_day)
+        self._set_cached_remote(cache_key, 600, payload)
+        _json_dump(
+            LINE_CUMULATIVE_CACHE_PATH,
+            {
+                "start_day": start_day,
+                "end_day": end_day,
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+                "payload": payload,
+            },
+        )
+        return payload
 
     def get_weekly_effect(self, *, days: int = 7, force: bool = False) -> dict[str, Any]:
         return {

@@ -1,0 +1,28 @@
+.line-cumulative-wrap {
+  margin-top: 14px;
+}
+
+.line-cumulative-table {
+  min-width: 920px;
+}
+
+.line-cumulative-table th:nth-child(1),
+.line-cumulative-table td:nth-child(1) {
+  min-width: 220px;
+}
+
+.line-cumulative-table th:nth-child(2),
+.line-cumulative-table td:nth-child(2) {
+  min-width: 88px;
+}
+
+.line-cumulative-table th:nth-child(3),
+.line-cumulative-table td:nth-child(3),
+.line-cumulative-table th:nth-child(4),
+.line-cumulative-table td:nth-child(4),
+.line-cumulative-table th:nth-child(5),
+.line-cumulative-table td:nth-child(5),
+.line-cumulative-table th:nth-child(6),
+.line-cumulative-table td:nth-child(6) {
+  min-width: 130px;
+}

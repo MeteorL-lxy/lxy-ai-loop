@@ -805,6 +805,18 @@ def _ordinary_ai_cut_404_retry_enabled() -> bool:
     ).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _ordinary_ai_cut_404_resubmit_enabled() -> bool:
+    return _line_name() == "ordinary" and str(
+        os.getenv("BARRY_ORDINARY_AI_CUT_SEGMENT_404_RESUBMIT_ENABLED", "1")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _ordinary_ai_cut_404_resubmit_attempts() -> int:
+    if not _ordinary_ai_cut_404_resubmit_enabled():
+        return 0
+    return max(0, int(os.getenv("BARRY_ORDINARY_AI_CUT_SEGMENT_404_RESUBMIT_ATTEMPTS") or 1))
+
+
 def _is_retryable_ai_cut_segment_404_failure(serial_payload: dict[str, object] | None) -> bool:
     if not isinstance(serial_payload, dict):
         return False
@@ -882,6 +894,142 @@ def _retry_ai_cut_segment_404_if_needed(
         if not _is_retryable_ai_cut_segment_404_failure(current_serial_payload):
             break
     return current_task_body, current_serial_payload
+
+
+def _submit_ai_cut_task_until_segment_ready(
+    *,
+    app_id: str,
+    third_serial_id: str,
+    episode_order: int,
+    clip_options: dict[str, object],
+    args: argparse.Namespace,
+) -> tuple[
+    dict[str, object] | None,
+    str,
+    dict[str, object] | None,
+    dict[str, object] | None,
+    dict[str, object] | None,
+    int,
+]:
+    ai_task_timeout = _effective_ai_task_timeout(args.timeout)
+    max_submit_attempts = 1 + _ordinary_ai_cut_404_resubmit_attempts()
+    last_task_create: dict[str, object] | None = None
+    last_task_body: dict[str, object] | None = None
+    last_serial_payload: dict[str, object] | None = None
+    last_chosen_segment: dict[str, object] | None = None
+    last_task_id = ""
+    last_submit_attempt = 1
+
+    for submit_attempt in range(1, max_submit_attempts + 1):
+        last_submit_attempt = submit_attempt
+        task_create = create_short_drama_clip_task(
+            app_id=app_id,
+            third_serial_ids=[third_serial_id],
+            auto_clip_output_folder="barry_video_batch",
+            download_output_folder="barry_video_batch",
+            source=str(clip_options.get("source") or DEFAULT_AI_ANIMATION_SOURCE),
+            max_episodes_per_serial=max(
+                int(clip_options.get("max_episodes_per_serial") or DEFAULT_MAX_EPISODES_PER_SERIAL),
+                int(episode_order or 0),
+            ),
+            auto_clip_enabled=bool(
+                clip_options.get("auto_clip_enabled")
+                if clip_options.get("auto_clip_enabled") is not None
+                else DEFAULT_AUTO_CLIP_ENABLED
+            ),
+            template_id=int(clip_options.get("template_id") or DEFAULT_TEMPLATE_ID),
+            segment_seconds=int(clip_options.get("segment_seconds") or DEFAULT_SEGMENT_SECONDS),
+            segment_max_seconds=int(clip_options.get("segment_max_seconds") or DEFAULT_SEGMENT_MAX_SECONDS),
+            process_concurrency=int(clip_options.get("process_concurrency") or DEFAULT_PROCESS_CONCURRENCY),
+            max_total_duration_seconds=int(
+                clip_options.get("max_total_duration_seconds") or DEFAULT_MAX_TOTAL_DURATION_SECONDS
+            ),
+            use_auto_migration=bool(
+                clip_options.get("use_auto_migration")
+                if clip_options.get("use_auto_migration") is not None
+                else DEFAULT_USE_AUTO_MIGRATION
+            ),
+            auto_clip_sync_material_agent_id=int(
+                clip_options.get("auto_clip_sync_material_agent_id") or DEFAULT_SYNC_MATERIAL_AGENT_ID
+            ),
+            auto_clip_sync_material_category_id=int(
+                clip_options.get("auto_clip_sync_material_category_id") or DEFAULT_SYNC_MATERIAL_CATEGORY_ID
+            ),
+            force_download=True,
+            timeout=args.submit_timeout,
+        )
+        task_id = str(task_create.get("task_id") or "").strip()
+        if not task_id:
+            raise RuntimeError(f"ai-cut 创建任务未返回 task_id: {json.dumps(task_create, ensure_ascii=False)}")
+        task_body = wait_for_short_drama_clip_task(
+            task_id,
+            timeout=ai_task_timeout,
+            poll_interval=args.poll_interval,
+            request_timeout=args.submit_timeout,
+        )
+        serial_payload = None
+        for payload in (task_body.get("serials") or []):
+            if str((payload or {}).get("third_serial_id") or "").strip() == third_serial_id:
+                serial_payload = dict(payload)
+                break
+        task_body, refreshed_serial_payload, chosen_segment = wait_for_serial_success_segment(
+            task_id,
+            third_serial_id=third_serial_id,
+            preferred_episode_order=episode_order,
+            timeout=ai_task_timeout,
+            poll_interval=args.poll_interval,
+            request_timeout=args.submit_timeout,
+            initial_task_body=task_body,
+        )
+        serial_payload = refreshed_serial_payload or serial_payload
+        if not serial_payload:
+            raise RuntimeError(f"ai-cut 未返回 serial 结果: {third_serial_id}")
+        if not chosen_segment:
+            task_body, serial_payload = _retry_ai_cut_segment_404_if_needed(
+                task_id=task_id,
+                third_serial_id=third_serial_id,
+                preferred_episode_order=episode_order,
+                request_timeout=args.submit_timeout,
+                serial_payload=serial_payload,
+                initial_task_body=task_body,
+            )
+            if isinstance(serial_payload, dict):
+                chosen_segment = choose_success_segment(
+                    serial_payload,
+                    preferred_episode_order=episode_order,
+                )
+        last_task_create = task_create
+        last_task_id = task_id
+        last_task_body = task_body
+        last_serial_payload = serial_payload
+        last_chosen_segment = chosen_segment
+        if chosen_segment:
+            return task_create, task_id, task_body, serial_payload, chosen_segment, submit_attempt
+        if (
+            submit_attempt < max_submit_attempts
+            and _is_retryable_ai_cut_segment_404_failure(serial_payload)
+        ):
+            _emit_status_line(
+                "aicut_segment_404_resubmit",
+                {
+                    "line": _line_name(),
+                    "task_id": task_id,
+                    "third_serial_id": str(third_serial_id or "").strip(),
+                    "attempt": submit_attempt,
+                    "max_attempts": max_submit_attempts,
+                },
+            )
+            continue
+        break
+
+    return (
+        last_task_create,
+        last_task_id,
+        last_task_body,
+        last_serial_payload,
+        last_chosen_segment,
+        last_submit_attempt,
+    )
 
 
 def _realtime_material_mode_enabled() -> bool:
@@ -1935,6 +2083,26 @@ def _validate_downloaded_mp4_file(path: Path) -> Path:
     return path
 
 
+def _is_remote_timeout_error_text(message: str) -> bool:
+    normalized = str(message or "").strip().lower()
+    if not normalized:
+        return False
+    return any(
+        token in normalized
+        for token in (
+            "timed out",
+            "timeout",
+            "read timed out",
+            "connect timeout",
+            "connection timed out",
+            "i/o timeout",
+            "operation timed out",
+            "ssl handshake timeout",
+            "504 gateway timeout",
+        )
+    )
+
+
 def _ensure_external_source_file(*, video_url: str, output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists() and output_path.stat().st_size > 0:
@@ -1945,7 +2113,13 @@ def _ensure_external_source_file(*, video_url: str, output_path: Path) -> Path:
                 output_path.unlink()
             except OSError:
                 pass
-    downloaded = Path(download_segment_video(video_url, output_path=output_path)).expanduser().resolve()
+    try:
+        downloaded = Path(download_segment_video(video_url, output_path=output_path)).expanduser().resolve()
+    except Exception as exc:
+        message = str(exc or "").strip()
+        if _is_remote_timeout_error_text(message):
+            raise RuntimeError(f"CDN 真实下载超时: {output_path.name} ({message})") from exc
+        raise RuntimeError(f"外部素材下载失败: {output_path.name} ({message})") from exc
     return _validate_downloaded_mp4_file(downloaded)
 
 
@@ -1981,6 +2155,8 @@ def _download_remote_media_via_ffmpeg(*, video_url: str, output_path: Path) -> P
         "44100",
         "-ac",
         "2",
+        "-f",
+        "mp4",
         "-movflags",
         "+faststart",
         str(output_path),
@@ -1990,7 +2166,10 @@ def _download_remote_media_via_ffmpeg(*, video_url: str, output_path: Path) -> P
     except FileNotFoundError as exc:
         raise RuntimeError("系统未安装 ffmpeg，无法下载 HLS/远程官方素材") from exc
     except subprocess.CalledProcessError as exc:
-        raise RuntimeError(f"ffmpeg 下载远程素材失败: {(exc.stderr or '').strip()}") from exc
+        stderr = (exc.stderr or "").strip()
+        if _is_remote_timeout_error_text(stderr):
+            raise RuntimeError(f"CDN 真实下载超时: {output_path.name} ({stderr})") from exc
+        raise RuntimeError(f"ffmpeg 下载远程素材失败: {stderr}") from exc
     if not output_path.exists() or output_path.stat().st_size <= 0:
         raise RuntimeError("ffmpeg 下载远程素材后文件为空")
     return output_path
@@ -2001,7 +2180,29 @@ def _download_lock_path(output_path: Path) -> Path:
 
 
 def _partial_download_path(output_path: Path) -> Path:
+    suffix = output_path.suffix or ""
+    if suffix:
+        stem = output_path.name[: -len(suffix)]
+        return output_path.with_name(f"{stem}.partial{suffix}")
     return output_path.with_name(f"{output_path.name}.partial")
+
+
+def _external_download_wait_seconds() -> int:
+    raw = os.getenv("BARRY_LOOP_EXTERNAL_DOWNLOAD_WAIT_SECONDS")
+    try:
+        value = int(raw) if raw else 600
+    except (TypeError, ValueError):
+        value = 600
+    return max(60, min(value, 3600))
+
+
+def _external_download_stale_seconds() -> int:
+    raw = os.getenv("BARRY_LOOP_EXTERNAL_DOWNLOAD_LOCK_STALE_SECONDS")
+    try:
+        value = int(raw) if raw else max(_external_download_wait_seconds() + 120, 900)
+    except (TypeError, ValueError):
+        value = max(_external_download_wait_seconds() + 120, 900)
+    return max(120, min(value, 7200))
 
 
 def _acquire_download_lock(lock_path: Path, *, stale_seconds: int = 1800) -> bool:
@@ -2033,10 +2234,11 @@ def _acquire_download_lock(lock_path: Path, *, stale_seconds: int = 1800) -> boo
 def _wait_for_downloaded_source(
     output_path: Path,
     *,
-    wait_seconds: int = 180,
+    wait_seconds: int | None = None,
     poll_interval_seconds: float = 0.5,
 ) -> Path:
-    deadline = time.time() + max(5, int(wait_seconds or 180))
+    effective_wait = int(wait_seconds or _external_download_wait_seconds())
+    deadline = time.time() + max(5, effective_wait)
     partial_path = _partial_download_path(output_path)
     lock_path = _download_lock_path(output_path)
     while time.time() < deadline:
@@ -2045,7 +2247,7 @@ def _wait_for_downloaded_source(
         if not lock_path.exists() and not partial_path.exists():
             break
         time.sleep(max(0.1, float(poll_interval_seconds or 0.5)))
-    raise RuntimeError(f"等待外部素材下载完成超时: {output_path.name}")
+    raise RuntimeError(f"等待同素材下载超时: {output_path.name}")
 
 
 def _ensure_remote_media_source(*, video_url: str, output_path: Path) -> Path:
@@ -2060,8 +2262,36 @@ def _ensure_remote_media_source(*, video_url: str, output_path: Path) -> Path:
                 pass
     lock_path = _download_lock_path(output_path)
     partial_path = _partial_download_path(output_path)
-    if not _acquire_download_lock(lock_path):
-        return _wait_for_downloaded_source(output_path)
+    if not _acquire_download_lock(lock_path, stale_seconds=_external_download_stale_seconds()):
+        try:
+            return _wait_for_downloaded_source(output_path)
+        except RuntimeError as exc:
+            if "等待同素材下载超时" not in str(exc):
+                raise
+            try:
+                lock_age = time.time() - lock_path.stat().st_mtime if lock_path.exists() else 0
+            except FileNotFoundError:
+                lock_age = 0
+            if lock_age >= _external_download_stale_seconds():
+                try:
+                    lock_path.unlink()
+                except OSError:
+                    pass
+                if _acquire_download_lock(lock_path, stale_seconds=_external_download_stale_seconds()):
+                    _emit_status_line(
+                        "external_download_lock_stale_takeover",
+                        {
+                            "line": _line_name(),
+                            "output_name": output_path.name,
+                            "lock_age_seconds": round(float(lock_age), 1),
+                            "stale_threshold_seconds": _external_download_stale_seconds(),
+                        },
+                    )
+                    pass
+                else:
+                    raise
+            else:
+                raise
     try:
         if output_path.exists() and output_path.stat().st_size > 0:
             try:
@@ -2415,83 +2645,17 @@ def _clip_batch_item(item: dict, args: argparse.Namespace, config) -> dict:
     ).strip()
     if not app_id or not third_serial_id:
         raise RuntimeError("ai-cut 剪辑缺少 app_id 或 third_serial_id")
-    ai_task_timeout = _effective_ai_task_timeout(args.timeout)
-    task_create = create_short_drama_clip_task(
-        app_id=app_id,
-        third_serial_ids=[third_serial_id],
-        auto_clip_output_folder="barry_video_batch",
-        download_output_folder="barry_video_batch",
-        source=str(clip_options.get("source") or DEFAULT_AI_ANIMATION_SOURCE),
-        max_episodes_per_serial=max(
-            int(clip_options.get("max_episodes_per_serial") or DEFAULT_MAX_EPISODES_PER_SERIAL),
-            int(episode_order or 0),
-        ),
-        auto_clip_enabled=bool(
-            clip_options.get("auto_clip_enabled")
-            if clip_options.get("auto_clip_enabled") is not None
-            else DEFAULT_AUTO_CLIP_ENABLED
-        ),
-        template_id=int(clip_options.get("template_id") or DEFAULT_TEMPLATE_ID),
-        segment_seconds=int(clip_options.get("segment_seconds") or DEFAULT_SEGMENT_SECONDS),
-        segment_max_seconds=int(clip_options.get("segment_max_seconds") or DEFAULT_SEGMENT_MAX_SECONDS),
-        process_concurrency=int(clip_options.get("process_concurrency") or DEFAULT_PROCESS_CONCURRENCY),
-        max_total_duration_seconds=int(
-            clip_options.get("max_total_duration_seconds") or DEFAULT_MAX_TOTAL_DURATION_SECONDS
-        ),
-        use_auto_migration=bool(
-            clip_options.get("use_auto_migration")
-            if clip_options.get("use_auto_migration") is not None
-            else DEFAULT_USE_AUTO_MIGRATION
-        ),
-        auto_clip_sync_material_agent_id=int(
-            clip_options.get("auto_clip_sync_material_agent_id") or DEFAULT_SYNC_MATERIAL_AGENT_ID
-        ),
-        auto_clip_sync_material_category_id=int(
-            clip_options.get("auto_clip_sync_material_category_id") or DEFAULT_SYNC_MATERIAL_CATEGORY_ID
-        ),
-        force_download=True,
-        timeout=args.submit_timeout,
+    task_create, task_id, task_body, serial_payload, chosen_segment, submit_attempt = (
+        _submit_ai_cut_task_until_segment_ready(
+            app_id=app_id,
+            third_serial_id=third_serial_id,
+            episode_order=episode_order,
+            clip_options=clip_options,
+            args=args,
+        )
     )
-    task_id = str(task_create.get("task_id") or "").strip()
-    if not task_id:
-        raise RuntimeError(f"ai-cut 创建任务未返回 task_id: {json.dumps(task_create, ensure_ascii=False)}")
-    task_body = wait_for_short_drama_clip_task(
-        task_id,
-        timeout=ai_task_timeout,
-        poll_interval=args.poll_interval,
-        request_timeout=args.submit_timeout,
-    )
-    serial_payload = None
-    for payload in (task_body.get("serials") or []):
-        if str((payload or {}).get("third_serial_id") or "").strip() == third_serial_id:
-            serial_payload = dict(payload)
-            break
-    task_body, refreshed_serial_payload, chosen_segment = wait_for_serial_success_segment(
-        task_id,
-        third_serial_id=third_serial_id,
-        preferred_episode_order=episode_order,
-        timeout=ai_task_timeout,
-        poll_interval=args.poll_interval,
-        request_timeout=args.submit_timeout,
-        initial_task_body=task_body,
-    )
-    serial_payload = refreshed_serial_payload or serial_payload
     if not serial_payload:
         raise RuntimeError(f"ai-cut 未返回 serial 结果: {third_serial_id}")
-    if not chosen_segment:
-        task_body, serial_payload = _retry_ai_cut_segment_404_if_needed(
-            task_id=task_id,
-            third_serial_id=third_serial_id,
-            preferred_episode_order=episode_order,
-            request_timeout=args.submit_timeout,
-            serial_payload=serial_payload,
-            initial_task_body=task_body,
-        )
-        if isinstance(serial_payload, dict):
-            chosen_segment = choose_success_segment(
-                serial_payload,
-                preferred_episode_order=episode_order,
-            )
     if not chosen_segment:
         raise RuntimeError(describe_serial_failure(serial_payload))
 
@@ -2548,6 +2712,7 @@ def _clip_batch_item(item: dict, args: argparse.Namespace, config) -> dict:
             "provider": "ai_cut_animation",
             "task_id": task_id,
             "manus_id": task_id,
+            "submit_attempt": int(submit_attempt or 1),
             "response": task_create,
         },
         "manus_id": task_id,

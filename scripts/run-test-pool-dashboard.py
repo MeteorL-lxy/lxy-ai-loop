@@ -75,6 +75,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/test-pool/daily-top-history":
                 force = str(query.get("force", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
                 payload = self.service.get_daily_top_play_history(force=force)
+            elif parsed.path == "/api/test-pool/line-cumulative":
+                force = str(query.get("force", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+                payload = self.service.get_line_cumulative_totals(force=force)
             elif parsed.path == "/api/test-pool/options":
                 payload = self.service.get_options()
             elif parsed.path == "/api/test-pool/rounds":

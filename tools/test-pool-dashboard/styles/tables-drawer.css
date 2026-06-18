@@ -357,6 +357,46 @@
   line-height: 1.45;
 }
 
+.drawer-panel .data-table.compact {
+  table-layout: fixed;
+}
+
+.drawer-panel .data-table.compact th:nth-child(1),
+.drawer-panel .data-table.compact td:nth-child(1) {
+  width: 44px;
+}
+
+.drawer-panel .data-table.compact th:nth-child(2),
+.drawer-panel .data-table.compact td:nth-child(2) {
+  width: 120px;
+}
+
+.drawer-panel .data-table.compact th:nth-child(4),
+.drawer-panel .data-table.compact td:nth-child(4) {
+  width: 96px;
+}
+
+.drawer-panel .data-table.compact th:nth-child(5),
+.drawer-panel .data-table.compact td:nth-child(5) {
+  width: 104px;
+}
+
+.drawer-panel .data-table.compact th:nth-child(6),
+.drawer-panel .data-table.compact td:nth-child(6) {
+  width: 96px;
+}
+
+.detail-status-cell {
+  white-space: nowrap;
+}
+
+.detail-status-cell .status-pill {
+  min-width: 68px;
+  height: 28px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
 .detail-failure-scroll {
   max-height: 96px;
   overflow-y: auto;

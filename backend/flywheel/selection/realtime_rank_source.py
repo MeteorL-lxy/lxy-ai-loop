@@ -9,6 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import requests
@@ -87,6 +88,8 @@ CREATIVE_LIST_ROTATION_APPS = [
 ]
 REALTIME_RANK_LINES = {"realtime", "realtime_day", "realtime_single"}
 GUANGDADA_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+_GUANGDADA_CALL_COUNT_LOCK = Lock()
+_GUANGDADA_CALL_COUNTS: dict[tuple[str, str], int] = {}
 
 
 def _priority_boost_env(name: str, default: float) -> float:
@@ -345,12 +348,38 @@ def _is_retryable_guangdada_error(exc: requests.RequestException) -> bool:
 
 
 def _guangdada_retry_attempts() -> int:
-    return max(1, int(os.getenv("BARRY_GUANGDADA_RETRY_ATTEMPTS") or 4))
+    raw = os.getenv("BARRY_GUANGDADA_RETRY_ATTEMPTS")
+    try:
+        value = int(raw) if raw is not None and str(raw).strip() != "" else 2
+    except (TypeError, ValueError):
+        value = 2
+    # 控制成本：广大大接口最多只重试 1 次（总尝试 2 次）。
+    return min(2, max(1, value))
 
 
 def _guangdada_retry_sleep_seconds(attempt: int) -> float:
     base = float(os.getenv("BARRY_GUANGDADA_RETRY_SLEEP_SECONDS") or 1.5)
     return min(6.0, max(0.5, base) * max(1.0, float(attempt)))
+
+
+def _current_round_label() -> str:
+    return str(os.getenv("BARRY_LOOP_ROUND_LABEL") or "").strip() or "ad-hoc"
+
+
+def _guangdada_counter_key() -> tuple[str, str]:
+    return (_current_realtime_line_name() or "unknown", _current_round_label())
+
+
+def _increment_guangdada_round_call_count(*, path: str) -> int:
+    key = _guangdada_counter_key()
+    with _GUANGDADA_CALL_COUNT_LOCK:
+        current = int(_GUANGDADA_CALL_COUNTS.get(key) or 0) + 1
+        _GUANGDADA_CALL_COUNTS[key] = current
+    line_name, round_label = key
+    _log_realtime_skip(
+        f"广大大本轮第 {current} 次调用：{path}（线路={line_name}，轮次={round_label}）"
+    )
+    return current
 
 
 def _zing_post(path: str, payload: dict[str, Any], *, timeout: float) -> dict[str, Any]:
@@ -359,6 +388,7 @@ def _zing_post(path: str, payload: dict[str, Any], *, timeout: float) -> dict[st
     last_exc: Exception | None = None
     for attempt in range(1, max_attempts + 1):
         try:
+            call_count = _increment_guangdada_round_call_count(path=path)
             response = requests.post(
                 f"{GUANGDADA_API_BASE}{path}",
                 json=payload,
@@ -370,9 +400,15 @@ def _zing_post(path: str, payload: dict[str, Any], *, timeout: float) -> dict[st
         except requests.RequestException as exc:
             last_exc = exc
             if attempt >= max_attempts or not _is_retryable_guangdada_error(exc):
+                if attempt >= max_attempts and max_attempts > 1 and _is_retryable_guangdada_error(exc):
+                    _log_realtime_skip(
+                        f"广大大接口重试 1 次后仍失败，已跳过当前条目：{path}，"
+                        f"本轮累计调用={call_count}，原因={exc}"
+                    )
                 raise RuntimeError(f"实时剧目榜请求失败: {exc}") from exc
             _log_realtime_skip(
-                f"广大大接口请求重试 {attempt}/{max_attempts - 1}：{path}，原因={exc}"
+                f"广大大接口首次请求失败，准备重试 1 次：{path}，"
+                f"本轮累计调用={call_count}，原因={exc}"
             )
             time.sleep(_guangdada_retry_sleep_seconds(attempt))
     else:

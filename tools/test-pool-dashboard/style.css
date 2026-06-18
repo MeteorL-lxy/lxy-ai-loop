@@ -3,5 +3,6 @@
 @import url("./styles/layout.css");
 @import url("./styles/live-panels.css");
 @import url("./styles/history.css");
+@import url("./styles/line-cumulative.css");
 @import url("./styles/tables-drawer.css");
 @import url("./styles/responsive.css");
