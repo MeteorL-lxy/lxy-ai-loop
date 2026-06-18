@@ -34,7 +34,7 @@ export function renderLineCumulative(overview) {
             <th>账号数</th>
             <th>累计播放</th>
             <th>累计点击</th>
-            <th>累计收益</th>
+            <th>累计总收益<br><span class="table-sub">分佣 + 广告 + 订单</span></th>
             <th>累计互动</th>
           </tr>
         </thead>
@@ -45,7 +45,7 @@ export function renderLineCumulative(overview) {
               <td>${fmtNum(row.account_count)}</td>
               <td>${fmtNum(row.view_total)}</td>
               <td>${fmtNum(row.click_total)}</td>
-              <td>${fmtMoney(row.income_total)}</td>
+              <td>${fmtMoney(row.income_total)}<span class="table-sub">分佣 ${fmtMoney(row.share_income_total)} / 广告 ${fmtMoney(row.ad_income_total)} / 订单 ${fmtMoney(row.order_amount_total)}</span></td>
               <td>${fmtNum(row.interaction_total)}</td>
             </tr>
           `).join("") : `<tr><td colspan="6">暂无线路累计样本</td></tr>`}
