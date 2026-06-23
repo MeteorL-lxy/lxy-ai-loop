@@ -367,6 +367,9 @@ def _push_tracker_artifacts(
     uid = str(config.get("uid") or "").strip()
     loop_name = str(config.get("loop_name") or "liuxinyu-ai-loop").strip()
     execute = str(config.get("execute") or "").strip().lower() in {"1", "true", "yes", "on"}
+    daily_target = config.get("daily_target")
+    publish_start_time = str(config.get("publish_start_time") or "").strip()
+    publish_interval_seconds = config.get("publish_interval_seconds")
     if not api_base or not owner:
         _write_tracker_error(tasks_path, stage="push_result", error="missing api_base or owner in conf/video_pipeline_tracker.json")
         return
@@ -392,6 +395,12 @@ def _push_tracker_artifacts(
         "--output",
         str(tasks_path),
     ]
+    if daily_target not in ("", None):
+        cmd.extend(["--daily-target", str(int(daily_target))])
+    if publish_start_time:
+        cmd.extend(["--publish-start-time", publish_start_time])
+    if publish_interval_seconds not in ("", None):
+        cmd.extend(["--publish-interval-seconds", str(int(publish_interval_seconds))])
     if execute:
         cmd.append("--execute")
     _run_tracker_command(cmd, log_path=log_path, stage="push_round_result", fallback_output=tasks_path)

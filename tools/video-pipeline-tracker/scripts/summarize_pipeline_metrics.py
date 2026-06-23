@@ -20,11 +20,17 @@ DEFAULT_API_BASE = os.getenv("AI_LOOP_DASHBOARD_API", "http://124.174.76.6")
 
 FIELD_LABELS = {
     "date": "日期",
+    "loop_name": "Loop 项目名",
+    "round_name": "Loop 轮次",
+    "ab_group": "A/B 分组",
+    "source_type": "候选源类型",
+    "strategy_binding_status": "策略绑定状态",
     "short_link_publish_time": "矩阵的发布时间",
     "assignee": "负责人（人员）",
     "task_id": "task_id",
     "douyin_t8_account": "FB账号昵称",
     "channel_id": "channel_id",
+    "social_account_id": "平台账号ID",
     "account_type": "账号类型",
     "clip_tool": "剪辑工具",
     "drama_name": "选剧名称",
@@ -92,6 +98,11 @@ def to_float(value: Any) -> float | None:
     return parsed
 
 
+def to_int(value: Any) -> int | None:
+    parsed = to_float(value)
+    return int(parsed) if parsed is not None else None
+
+
 def rate(numerator: int | float, denominator: int | float) -> float:
     return round((float(numerator) / float(denominator) * 100), 2) if denominator else 0.0
 
@@ -152,6 +163,99 @@ def extract_strategy_context(row: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {}
 
 
+def row_loop_name(row: dict[str, Any]) -> str:
+    value = text(row.get("loop_name"))
+    if value:
+        return value
+    params = parse_jsonish(row.get("clip_params"))
+    value = text(params.get("loop_name"))
+    if value:
+        return value
+    return "steven-jiao-ai-loop" if text(row.get("task_id")).startswith("steven_jiao:") else ""
+
+
+def row_round_name(row: dict[str, Any]) -> str:
+    value = text(row.get("round_name"))
+    if value:
+        return value
+    return text(parse_jsonish(row.get("clip_params")).get("round")) or "unknown"
+
+
+def account_key(row: dict[str, Any]) -> str:
+    for field in ("social_account_id", "douyin_t8_account", "channel_id", "uid", "task_id"):
+        value = text(row.get(field))
+        if value:
+            return value
+    return ""
+
+
+def parse_dt(value: Any) -> datetime | None:
+    raw = text(value)
+    if not raw:
+        return None
+    raw = raw.replace("T", " ")[:19]
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def row_time(row: dict[str, Any]) -> datetime | None:
+    for field in ("update_time", "drama_timestamp", "short_link_publish_time", "publish_req_start_time", "date"):
+        parsed = parse_dt(row.get(field))
+        if parsed:
+            return parsed
+    return None
+
+
+def is_invalid_publish_status(row: dict[str, Any]) -> bool:
+    return text(row.get("publish_status")).lower() in {"failed", "cancelled", "canceled", "error"}
+
+
+def reason_text(row: dict[str, Any]) -> str:
+    parts = [text(row.get(field)) for field in ("publish_fail_reason", "clip_fail_reason", "fail_stage", "clip_params")]
+    return " ".join(part for part in parts if part).lower()
+
+
+def is_clip_queued(row: dict[str, Any]) -> bool:
+    reason = reason_text(row)
+    last_status = text(row.get("clip_last_status")).lower()
+    return "last_status=queued" in reason or last_status == "queued"
+
+
+def is_clip_done(row: dict[str, Any]) -> bool:
+    if any(has_value(row.get(field)) for field in ("clip_end_time", "output_duration_sec", "output_size_mb", "social_post_id")):
+        return True
+    return text(row.get("publish_status")).lower() in {"success", "reviewing"}
+
+
+def is_clipping(row: dict[str, Any]) -> bool:
+    if is_clip_done(row) or is_clip_queued(row) or is_invalid_publish_status(row):
+        return False
+    reason = reason_text(row)
+    return bool(has_value(row.get("clip_start_time")) or "last_status=processing" in reason or "last_status=running" in reason)
+
+
+def is_scheduled_publish(row: dict[str, Any]) -> bool:
+    return has_value(row.get("short_link_publish_time")) and not is_invalid_publish_status(row)
+
+
+def row_metric_value(row: dict[str, Any], key: str) -> Any:
+    if has_value(row.get(key)):
+        return row.get(key)
+    params = parse_jsonish(row.get("clip_params"))
+    if has_value(params.get(key)):
+        return params.get(key)
+    context = params.get("strategy_context")
+    if isinstance(context, dict):
+        for item in context.values():
+            if isinstance(item, dict) and has_value(item.get(key)):
+                return item.get(key)
+    return None
+
+
 def fetch_table(api_base: str, table: str, *, page_size: int, max_rows: int) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     offset = 0
@@ -202,12 +306,10 @@ def filter_rows(rows: list[dict[str, Any]], args: argparse.Namespace) -> list[di
         if args.owner and text(row.get("assignee")) != args.owner:
             continue
         if args.loop_name:
-            params = parse_jsonish(row.get("clip_params"))
-            loop_name = text(params.get("loop_name"))
-            if not loop_name:
-                loop_name = "steven-jiao-ai-loop" if text(row.get("task_id")).startswith("steven_jiao:") else ""
-            if loop_name != args.loop_name:
+            if row_loop_name(row) != args.loop_name:
                 continue
+        if args.round_name and row_round_name(row) != args.round_name:
+            continue
         if args.date_from or args.date_to:
             if not in_range(row, args.date_from, args.date_to):
                 continue
@@ -221,12 +323,16 @@ def status_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     success = counter.get("success", 0)
     failed = counter.get("failed", 0)
     reviewing = counter.get("reviewing", 0)
+    pending = counter.get("pending", 0)
+    cancelled = counter.get("cancelled", 0) + counter.get("canceled", 0)
     return {
         "total": total,
         "success": success,
         "failed": failed,
         "reviewing": reviewing,
-        "other": total - success - failed - reviewing,
+        "pending": pending,
+        "cancelled": cancelled,
+        "other": total - success - failed - reviewing - pending - cancelled,
         "success_rate": rate(success, total),
         "failed_rate": rate(failed, total),
         "status_distribution": dict(counter.most_common()),
@@ -237,6 +343,19 @@ def group_metrics(rows: list[dict[str, Any]], field: str, top: int) -> list[dict
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         key = text(row.get(field)) or "unknown"
+        groups[key].append(row)
+    output = []
+    for key, items in groups.items():
+        metrics = status_metrics(items)
+        output.append({"key": key, **metrics})
+    output.sort(key=lambda item: (item["total"], item["success"], -item["failed"]), reverse=True)
+    return output[:top]
+
+
+def group_metrics_by_key(rows: list[dict[str, Any]], key_fn, top: int) -> list[dict[str, Any]]:
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        key = text(key_fn(row)) or "unknown"
         groups[key].append(row)
     output = []
     for key, items in groups.items():
@@ -266,6 +385,80 @@ def strategy_metrics(rows: list[dict[str, Any]], top: int) -> list[dict[str, Any
         })
     output.sort(key=lambda item: (item["total"], item["success_rate"], item["success"]), reverse=True)
     return output[:top]
+
+
+def node_metrics(rows: list[dict[str, Any]], args: argparse.Namespace) -> dict[str, Any]:
+    round_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        round_groups[row_round_name(row)].append(row)
+    latest_round_name = ""
+    latest_round_rows: list[dict[str, Any]] = []
+    if round_groups:
+        latest_round_name, latest_round_rows = max(
+            round_groups.items(),
+            key=lambda item: max((row_time(row) or datetime.min for row in item[1]), default=datetime.min),
+        )
+
+    latest_time = max((row_time(row) for row in rows if row_time(row)), default=None)
+    window_rows: list[dict[str, Any]] = []
+    if latest_time:
+        window_start = latest_time.timestamp() - (args.selection_window_minutes * 60)
+        window_rows = [
+            row for row in rows
+            if row_time(row) and window_start <= row_time(row).timestamp() <= latest_time.timestamp()
+        ]
+
+    selected_round_dramas = {text(row.get("drama_name")) for row in latest_round_rows if text(row.get("drama_name"))}
+    selected_window_dramas = {text(row.get("drama_name")) for row in window_rows if text(row.get("drama_name"))}
+    round_accounts = {account_key(row) for row in latest_round_rows if account_key(row)}
+    all_accounts = {account_key(row) for row in rows if account_key(row)}
+    scheduled_times = [dt for dt in (parse_dt(row.get("short_link_publish_time")) for row in rows if is_scheduled_publish(row)) if dt]
+    published_today = sum(1 for row in rows if text(row.get("publish_status")).lower() == "success")
+    target_candidates = [
+        to_int(row_metric_value(row, key))
+        for row in rows
+        for key in ("daily_publish_target", "round_account_count", "target_account_count")
+    ]
+    target_candidates = [value for value in target_candidates if value is not None]
+    daily_target = args.daily_target if args.daily_target is not None else (max(target_candidates) if target_candidates else len(rows))
+    target_source = "argument" if args.daily_target is not None else ("row_field" if target_candidates else "matched_rows")
+    publish_start_candidates = [
+        parse_dt(row_metric_value(row, key))
+        for row in rows
+        for key in ("publish_schedule_start_time", "publish_start_time")
+    ]
+    publish_start_candidates = [value for value in publish_start_candidates if value]
+    publish_interval_candidates = [
+        to_int(row_metric_value(row, key))
+        for row in rows
+        for key in ("publish_interval_sec", "publish_account_interval_seconds")
+    ]
+    publish_interval_candidates = [value for value in publish_interval_candidates if value is not None]
+    return {
+        "latest_round_name": latest_round_name,
+        "selection_window_minutes": args.selection_window_minutes,
+        "window_selected_drama_count": len(selected_window_dramas),
+        "round_selected_drama_count": len(selected_round_dramas),
+        "round_target_account_count": len(round_accounts),
+        "matched_account_count": len(all_accounts),
+        "round_task_count": len(latest_round_rows),
+        "clip_tools": sorted({text(row.get("clip_tool")) for row in rows if text(row.get("clip_tool"))}),
+        "round_clip_tools": sorted({text(row.get("clip_tool")) for row in latest_round_rows if text(row.get("clip_tool"))}),
+        "clip_done_count": sum(1 for row in rows if is_clip_done(row)),
+        "clip_queued_count": sum(1 for row in rows if is_clip_queued(row)),
+        "clipping_count": sum(1 for row in rows if is_clipping(row)),
+        "clip_failed_count": sum(1 for row in rows if text(row.get("fail_stage")).lower() == "clip" or has_value(row.get("clip_fail_reason"))),
+        "published_today_count": published_today,
+        "publish_scheduled_count": sum(1 for row in rows if is_scheduled_publish(row)),
+        "publish_failed_count": sum(1 for row in rows if text(row.get("publish_status")).lower() == "failed"),
+        "daily_publish_target": daily_target,
+        "daily_target_source": target_source,
+        "unpublished_target_gap_count": max(daily_target - published_today, 0),
+        "first_scheduled_publish_time": min(scheduled_times).strftime("%Y-%m-%d %H:%M:%S") if scheduled_times else "",
+        "planned_publish_start_time": args.publish_start_time,
+        "publish_start_time": args.publish_start_time or (min(publish_start_candidates).strftime("%Y-%m-%d %H:%M:%S") if publish_start_candidates else (min(scheduled_times).strftime("%Y-%m-%d %H:%M:%S") if scheduled_times else "")),
+        "publish_account_interval_seconds": args.publish_interval_seconds if args.publish_interval_seconds is not None else (publish_interval_candidates[0] if publish_interval_candidates else None),
+    }
 
 
 def completeness(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -303,6 +496,11 @@ def build_summary(rows: list[dict[str, Any]], args: argparse.Namespace) -> dict[
         "overall": status_metrics(filtered),
         "field_completeness": completeness(filtered),
         "numeric_metrics": numeric,
+        "node_metrics": node_metrics(filtered, args),
+        "by_loop": group_metrics_by_key(filtered, row_loop_name, args.top),
+        "by_round": group_metrics_by_key(filtered, row_round_name, args.top),
+        "by_account_key": group_metrics_by_key(filtered, account_key, args.top),
+        "by_drama": group_metrics(filtered, "drama_name", args.top),
         "by_owner": group_metrics(filtered, "assignee", args.top),
         "by_account": group_metrics(filtered, "douyin_t8_account", args.top),
         "by_ab_group": group_metrics(filtered, "ab_group", args.top),
@@ -324,6 +522,7 @@ def md_table(headers: list[str], rows: list[list[Any]]) -> str:
 
 def render_markdown(summary: dict[str, Any]) -> str:
     overall = summary["overall"]
+    nodes = summary["node_metrics"]
     lines = [
         f"# Video Pipeline 统计报告",
         "",
@@ -332,6 +531,27 @@ def render_markdown(summary: dict[str, Any]) -> str:
         f"- 命中行数：{summary['rows_matched']}",
         f"- 成功率：{overall['success_rate']}%（成功 {overall['success']} / 总数 {overall['total']}）",
         f"- 失败率：{overall['failed_rate']}%（失败 {overall['failed']}）",
+        f"- 节点口径：选剧 {nodes['window_selected_drama_count']} 部/{nodes['round_target_account_count']} 账号，剪辑完成 {nodes['clip_done_count']} / 排队 {nodes['clip_queued_count']} / 剪辑中 {nodes['clipping_count']}，发布已 {nodes['published_today_count']} / 预 {nodes['publish_scheduled_count']} / 未 {nodes['unpublished_target_gap_count']}",
+        "",
+        "## Loop 节点指标",
+        md_table(
+            ["指标", "值"],
+            [
+                ["最新轮次", nodes["latest_round_name"]],
+                ["半小时选剧数", nodes["window_selected_drama_count"]],
+                ["本轮选剧数", nodes["round_selected_drama_count"]],
+                ["本轮目标账号数", nodes["round_target_account_count"]],
+                ["AI 剪辑工具", ", ".join(nodes["round_clip_tools"] or nodes["clip_tools"])],
+                ["剪辑完成", nodes["clip_done_count"]],
+                ["排队中", nodes["clip_queued_count"]],
+                ["剪辑中", nodes["clipping_count"]],
+                ["已发布(当天)", nodes["published_today_count"]],
+                ["预发布", nodes["publish_scheduled_count"]],
+                ["未发布缺口", nodes["unpublished_target_gap_count"]],
+                ["发布开始时间", nodes["publish_start_time"]],
+                ["账号发布间隔(s)", nodes["publish_account_interval_seconds"] or ""],
+            ],
+        ),
         "",
         "## 字段完整度最低项",
         md_table(
@@ -343,6 +563,18 @@ def render_markdown(summary: dict[str, Any]) -> str:
         md_table(
             ["负责人", "总数", "成功", "失败", "成功率"],
             [[item["key"], item["total"], item["success"], item["failed"], f"{item['success_rate']}%"] for item in summary["by_owner"]],
+        ),
+        "",
+        "## 轮次 Top",
+        md_table(
+            ["轮次", "总数", "成功", "失败", "预处理中", "成功率"],
+            [[item["key"], item["total"], item["success"], item["failed"], item["reviewing"], f"{item['success_rate']}%"] for item in summary["by_round"]],
+        ),
+        "",
+        "## 短剧 Top",
+        md_table(
+            ["短剧", "总数", "成功", "失败", "成功率"],
+            [[item["key"], item["total"], item["success"], item["failed"], f"{item['success_rate']}%"] for item in summary["by_drama"]],
         ),
         "",
         "## 策略 Top",
@@ -372,8 +604,13 @@ def main() -> int:
     parser.add_argument("--input", default="", help="Optional JSON file instead of API")
     parser.add_argument("--owner", default="")
     parser.add_argument("--loop-name", default="")
+    parser.add_argument("--round-name", default="")
     parser.add_argument("--date-from", default="")
     parser.add_argument("--date-to", default="")
+    parser.add_argument("--daily-target", type=int, default=None, help="Daily publish target used by unpublished gap metrics")
+    parser.add_argument("--publish-start-time", default="", help="Planned publish start time, e.g. 2026-06-22 19:00:00")
+    parser.add_argument("--publish-interval-seconds", type=int, default=None, help="Planned interval between account publishes")
+    parser.add_argument("--selection-window-minutes", type=int, default=30, help="Window for recent drama-selection metrics")
     parser.add_argument("--page-size", type=int, default=1000)
     parser.add_argument("--max-rows", type=int, default=100000)
     parser.add_argument("--top", type=int, default=15)

@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
 import urllib.request
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -92,6 +94,76 @@ def merge_clip_params(existing: Any, strategy_context: dict[str, Any], extra: di
     return json.dumps(params, ensure_ascii=False, separators=(",", ":"))
 
 
+def is_invalid_publish_status(row: dict[str, Any]) -> bool:
+    return text(row.get("publish_status")).lower() in {"failed", "cancelled", "canceled", "error"}
+
+
+def reason_text(row: dict[str, Any]) -> str:
+    return " ".join(
+        text(row.get(field))
+        for field in ("publish_fail_reason", "clip_fail_reason", "fail_stage")
+        if text(row.get(field))
+    ).lower()
+
+
+def is_clip_queued(row: dict[str, Any]) -> bool:
+    reason = reason_text(row)
+    params = text(row.get("clip_params")).lower()
+    return "last_status=queued" in reason or "last_status=queued" in params or "queued" in text(row.get("clip_last_status")).lower()
+
+
+def is_clip_done(row: dict[str, Any]) -> bool:
+    return any(text(row.get(field)) for field in ("clip_end_time", "output_duration_sec", "output_size_mb", "social_post_id")) or text(row.get("publish_status")).lower() in {"success", "reviewing"}
+
+
+def is_clipping(row: dict[str, Any]) -> bool:
+    if is_clip_done(row) or is_clip_queued(row) or is_invalid_publish_status(row):
+        return False
+    return bool(text(row.get("clip_start_time")) or "last_status=processing" in reason_text(row) or "last_status=running" in reason_text(row))
+
+
+def account_key(row: dict[str, Any]) -> str:
+    for field in ("social_account_id", "douyin_t8_account", "channel_id", "uid", "task_id"):
+        value = text(row.get(field))
+        if value:
+            return value
+    return ""
+
+
+def build_node_metrics(args: argparse.Namespace, task_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    selected_dramas = {text(row.get("drama_name")) for row in task_rows if text(row.get("drama_name"))}
+    accounts = {account_key(row) for row in task_rows if account_key(row)}
+    status_distribution = Counter(text(row.get("publish_status")).lower() or "unknown" for row in task_rows)
+    success = status_distribution.get("success", 0)
+    failed = status_distribution.get("failed", 0)
+    scheduled = sum(1 for row in task_rows if text(row.get("short_link_publish_time")) and not is_invalid_publish_status(row))
+    daily_target = args.daily_target if args.daily_target is not None else len(task_rows)
+    rounds = {text(row.get("round_name")) for row in task_rows if text(row.get("round_name"))}
+    return {
+        "task_count": len(task_rows),
+        "success_count": success,
+        "failed_count": failed,
+        "pending_count": status_distribution.get("pending", 0),
+        "reviewing_count": status_distribution.get("reviewing", 0),
+        "cancelled_count": status_distribution.get("cancelled", 0) + status_distribution.get("canceled", 0),
+        "publish_status_distribution": dict(status_distribution.most_common()),
+        "round_count": len(rounds),
+        "account_count": len(accounts),
+        "drama_count": len(selected_dramas),
+        "round_selected_drama_count": len(selected_dramas),
+        "round_target_account_count": len(accounts),
+        "clip_tools": sorted({text(row.get("clip_tool")) for row in task_rows if text(row.get("clip_tool"))}),
+        "clip_done_count": sum(1 for row in task_rows if is_clip_done(row)),
+        "clip_queued_count": sum(1 for row in task_rows if is_clip_queued(row)),
+        "clipping_count": sum(1 for row in task_rows if is_clipping(row)),
+        "publish_scheduled_count": scheduled,
+        "daily_publish_target": daily_target,
+        "unpublished_target_gap_count": max(daily_target - success, 0),
+        "publish_start_time": args.publish_start_time,
+        "publish_account_interval_seconds": args.publish_interval_seconds,
+    }
+
+
 def normalize_task(row: dict[str, Any], args: argparse.Namespace, strategy_context: dict[str, Any]) -> dict[str, Any]:
     out = dict(row)
     out.setdefault("date", args.date or datetime.now().strftime("%Y-%m-%d"))
@@ -101,10 +173,11 @@ def normalize_task(row: dict[str, Any], args: argparse.Namespace, strategy_conte
         out.setdefault("uid", args.uid)
     out.setdefault("publish_status", "pending")
     out.setdefault("update_time", now_text())
-    if args.round_name:
-        out.setdefault("round_name", args.round_name)
-    if args.ab_group:
-        out.setdefault("ab_group", args.ab_group)
+    if args.round_name and not text(out.get("round_name")):
+        out["round_name"] = args.round_name
+    if args.ab_group and not text(out.get("ab_group")):
+        out["ab_group"] = args.ab_group
+    out.setdefault("loop_name", args.loop_name)
     out.setdefault("strategy_binding_status", "loop_bound" if strategy_context else "telemetry_only")
     extra_params = {
         "loop_name": args.loop_name,
@@ -114,15 +187,24 @@ def normalize_task(row: dict[str, Any], args: argparse.Namespace, strategy_conte
     }
     out["clip_params"] = merge_clip_params(out.get("clip_params"), strategy_context, extra_params)
     if not text(out.get("task_id")):
-        seed = ":".join([args.loop_name, text(out.get("date")), text(out.get("douyin_t8_account") or out.get("channel_id")), text(out.get("social_post_id")), now_text()])
-        out["task_id"] = f"loop_result:{abs(hash(seed))}"
+        stable_parts = {
+            "loop_name": args.loop_name,
+            "round_name": text(out.get("round_name")),
+            "date": text(out.get("date")),
+            "account": text(out.get("social_account_id") or out.get("douyin_t8_account") or out.get("channel_id")),
+            "drama_name": text(out.get("drama_name")),
+            "social_post_id": text(out.get("social_post_id")),
+        }
+        seed = json.dumps(stable_parts, ensure_ascii=False, sort_keys=True)
+        out["task_id"] = f"loop_result:{hashlib.sha1(seed.encode('utf-8')).hexdigest()[:16]}"
     return out
 
 
 def build_event(args: argparse.Namespace, task_rows: list[dict[str, Any]], strategy_context: dict[str, Any]) -> dict[str, Any]:
     event_time = now_text()
-    success = sum(1 for row in task_rows if text(row.get("publish_status")) == "success")
-    failed = sum(1 for row in task_rows if text(row.get("publish_status")) == "failed")
+    node_metrics = build_node_metrics(args, task_rows)
+    success = node_metrics["success_count"]
+    failed = node_metrics["failed_count"]
     selected = next(iter(strategy_context.values()), {}) if strategy_context else {}
     event_id = args.event_id or f"skill-result:{args.loop_name}:{args.owner}:{args.round_name or 'round'}:{event_time.replace(' ', 'T')}"
     return {
@@ -139,7 +221,7 @@ def build_event(args: argparse.Namespace, task_rows: list[dict[str, Any]], strat
         "round_name": args.round_name,
         "ab_group": args.ab_group,
         "severity": "warn" if failed else "info",
-        "metric_json": json.dumps({"task_count": len(task_rows), "success_count": success, "failed_count": failed}, ensure_ascii=False),
+        "metric_json": json.dumps(node_metrics, ensure_ascii=False),
         "source": "video_pipeline_tracker_skill",
         "source_file": args.tasks,
         "created_at": event_time,
@@ -159,6 +241,9 @@ def main() -> int:
     parser.add_argument("--ab-group", default="")
     parser.add_argument("--strategy-run-id", default="")
     parser.add_argument("--date", default="")
+    parser.add_argument("--daily-target", type=int, default=None, help="Daily publish target for unpublished gap metrics")
+    parser.add_argument("--publish-start-time", default="", help="Planned publish start time, e.g. 2026-06-22 19:00:00")
+    parser.add_argument("--publish-interval-seconds", type=int, default=None, help="Planned interval between account publishes")
     parser.add_argument("--event-type", default="loop_result")
     parser.add_argument("--event-id", default="")
     parser.add_argument("--event-title", default="")

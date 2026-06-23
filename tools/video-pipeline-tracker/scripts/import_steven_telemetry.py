@@ -21,6 +21,7 @@ from typing import Any
 
 DEFAULT_OWNER = "焦千为"
 DEFAULT_UID = "2265845568"
+DEFAULT_LOOP_NAME = "steven-jiao-ai-loop"
 
 
 def read_json(path: Path) -> Any:
@@ -116,6 +117,10 @@ def trace_to_row(
     team_map: dict[str, dict[str, Any]],
     owner: str,
     default_uid: str,
+    loop_name: str,
+    daily_target: int | None,
+    publish_start_time: str,
+    publish_interval_seconds: int | None,
 ) -> dict[str, Any]:
     team_id = str(trace.get("team_id") or "")
     team = team_map.get(team_id) or {}
@@ -135,10 +140,15 @@ def trace_to_row(
         "business": "shortdrama",
         "source_kind": "steven_jiao_telemetry",
         "source": trace.get("source_type") or candidate.get("source"),
+        "loop_name": loop_name,
         "app_id": trace.get("app_id") or candidate.get("app_id"),
         "serial_id": trace.get("serial_id") or candidate.get("serial_id"),
         "ab_group": trace.get("ab_group"),
         "round": trace.get("round"),
+        "scheduled_at": trace.get("scheduled_at"),
+        "daily_publish_target": daily_target,
+        "publish_start_time": publish_start_time,
+        "publish_account_interval_seconds": publish_interval_seconds,
         "clip_engine": clip.get("clip_engine"),
         "cut_type": clip.get("cut_type"),
         "strategy_binding_status": "telemetry_only",
@@ -185,6 +195,7 @@ def trace_to_row(
         "_team_id": team_id,
         "round_name": trace.get("round"),
         "ab_group": trace.get("ab_group"),
+        "loop_name": loop_name,
         "source_type": trace.get("source_type"),
         "strategy_binding_status": "telemetry_only",
     }
@@ -220,7 +231,12 @@ def main() -> int:
     parser.add_argument("--api-base", default="http://127.0.0.1:8770")
     parser.add_argument("--assignee", default=DEFAULT_OWNER)
     parser.add_argument("--uid", default=DEFAULT_UID)
+    parser.add_argument("--loop-name", default=DEFAULT_LOOP_NAME)
+    parser.add_argument("--daily-target", type=int, default=None, help="Daily publish target stored in clip_params for unpublished gap metrics")
+    parser.add_argument("--publish-start-time", default="", help="Planned publish start time stored in clip_params")
+    parser.add_argument("--publish-interval-seconds", type=int, default=None, help="Planned interval between account publishes stored in clip_params")
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--skip-existing", action="store_true", help="Skip rows whose task_id already exists. Default posts all parsed rows so later status changes can be upserted by the API.")
     parser.add_argument("--batch-size", type=int, default=300)
     parser.add_argument("-o", "--output", default="")
     args = parser.parse_args()
@@ -239,31 +255,42 @@ def main() -> int:
             if path.stat().st_size == 0:
                 continue
             for trace in iter_jsonl(path):
-                rows.append(trace_to_row(trace, team_map=team_map, owner=args.assignee, default_uid=args.uid))
+                rows.append(trace_to_row(
+                    trace,
+                    team_map=team_map,
+                    owner=args.assignee,
+                    default_uid=args.uid,
+                    loop_name=args.loop_name,
+                    daily_target=args.daily_target,
+                    publish_start_time=args.publish_start_time,
+                    publish_interval_seconds=args.publish_interval_seconds,
+                ))
 
-    existing = existing_task_ids(args.api_base) if args.execute else set()
-    new_rows = [row for row in rows if row.get("task_id") not in existing]
+    existing = existing_task_ids(args.api_base) if args.execute and args.skip_existing else set()
+    post_rows_payload = [row for row in rows if row.get("task_id") not in existing] if args.skip_existing else rows
 
     summary = {
         "dates": dates,
         "trace_files": trace_files,
         "parsed_rows": len(rows),
-        "new_rows": len(new_rows),
-        "skipped_existing": len(rows) - len(new_rows),
+        "rows_to_post": len(post_rows_payload),
+        "skipped_existing": len(rows) - len(post_rows_payload),
+        "skip_existing": args.skip_existing,
         "assignee": args.assignee,
+        "loop_name": args.loop_name,
         "execute": args.execute,
     }
 
     if args.output:
-        Path(args.output).write_text(json.dumps(new_rows, ensure_ascii=False, indent=2), encoding="utf-8")
+        Path(args.output).write_text(json.dumps(post_rows_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     if not args.execute:
-        print(json.dumps({**summary, "sample": new_rows[:2]}, ensure_ascii=False, indent=2))
+        print(json.dumps({**summary, "sample": post_rows_payload[:2]}, ensure_ascii=False, indent=2))
         return 0
 
     responses = []
-    for i in range(0, len(new_rows), args.batch_size):
-        batch = new_rows[i:i + args.batch_size]
+    for i in range(0, len(post_rows_payload), args.batch_size):
+        batch = post_rows_payload[i:i + args.batch_size]
         if not batch:
             continue
         responses.append(post_rows(args.api_base, batch))

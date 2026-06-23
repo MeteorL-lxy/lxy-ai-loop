@@ -26,3 +26,11 @@
 .line-cumulative-table td:nth-child(6) {
   min-width: 130px;
 }
+
+.line-cumulative-table .income-breakdown {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}

@@ -1,0 +1,19 @@
+{
+  "strategy_context": {
+    "drama_selection": {
+      "strategy_type": "drama_selection",
+      "strategy_code": "drama_demo_v1",
+      "strategy_name": "示例选剧策略"
+    },
+    "clip": {
+      "strategy_type": "clip",
+      "strategy_code": "auto_editing_demo",
+      "strategy_name": "示例 AI 自动剪辑"
+    },
+    "publish": {
+      "strategy_type": "publish",
+      "strategy_code": "staggered_publish_demo",
+      "strategy_name": "示例错峰发布"
+    }
+  }
+}

@@ -692,6 +692,8 @@ def _parse_live_line_runtime(line_name: str, *, day_key: str) -> dict[str, Any]:
     if latest_start:
         active_since, active_round_name = latest_start
         is_active_round = True
+        if day_key and not active_since.startswith(day_key):
+            is_active_round = False
         if latest_done and latest_done[1] == active_round_name and latest_done[0] >= active_since:
             is_active_round = False
         if latest_exit and latest_exit[0] >= active_since:
@@ -2098,6 +2100,20 @@ class TestPoolDashboardService:
             progress_pct = round((success_count / target_total) * 100, 2) if target_total else 0.0
             failure_total = failed_count + unsubmitted_count
             stability_pct = round(max(0.0, 100 - ((failure_total / max(requested_count, 1)) * 100)), 2) if requested_count else 0.0
+            latest_is_today = bool(latest and latest.day_key == today_key)
+            latest_is_processing_today = bool(
+                latest_is_today
+                and (latest.processing_count > 0 or latest.status == "processing")
+            )
+            is_running = bool(live_runtime.get("is_running")) or latest_is_processing_today
+            runtime_state = _text(live_runtime.get("runtime_state"))
+            if not runtime_state:
+                if latest_is_today and latest:
+                    runtime_state = latest.status_label
+                elif latest:
+                    runtime_state = "未运行"
+                else:
+                    runtime_state = "未运行"
             line_targets.append(
                 {
                     "line_name": line_name,
@@ -2115,10 +2131,10 @@ class TestPoolDashboardService:
                     "stability_pct": stability_pct,
                     "last_update": live_runtime.get("last_update") or (latest.exported_at if latest else ""),
                     "latest_round": live_runtime.get("latest_round") or (latest.round_name if latest else ""),
-                    "runtime_state": live_runtime.get("runtime_state") or (latest.status_label if latest else "未运行"),
+                    "runtime_state": runtime_state,
                     "note": latest.note if latest else "",
                     "live_stage": live_runtime.get("live_stage") or "",
-                    "is_running": bool(live_runtime.get("is_running")) or bool(latest and (latest.processing_count > 0 or latest.status == "processing")),
+                    "is_running": is_running,
                 }
             )
         return {
@@ -2971,6 +2987,19 @@ class TestPoolDashboardService:
                     },
                 )
                 return self._set_cached_remote(cache_key, 300, remote_trend)
+
+        if (
+            persisted_payload
+            and _text(persisted_payload.get("source")) == "ai_loop_reporting_p0_summary"
+        ):
+            stale_payload = dict(persisted_payload)
+            remote_note = _text(remote_payload.get("note"))
+            stale_payload["latest_note"] = (
+                f"{_text(stale_payload.get('latest_note'))}；ai-loop-reporting 本次刷新失败，"
+                f"暂时展示上次成功缓存。{remote_note}"
+            ).strip("；")
+            stale_payload["cache_warning"] = remote_note or "ai-loop-reporting 本次刷新失败，暂时展示上次成功缓存。"
+            return self._set_cached_remote(cache_key, 300, stale_payload)
 
         if (
             persisted_display_end_day == display_end_day

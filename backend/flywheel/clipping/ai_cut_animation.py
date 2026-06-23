@@ -17,8 +17,12 @@ import requests
 BASE_URL_ENV = "AI_ANIMATION_BASE_URL"
 ACCESS_KEY_ENV = "AI_ANIMATION_ACCESS_KEY"
 SECRET_KEY_ENV = "AI_ANIMATION_SECRET_KEY"
+ADMIN_BASE_URL_ENV = "AI_ANIMATION_ADMIN_API_BASE_URL"
+ADMIN_BEARER_TOKEN_ENV = "AI_ANIMATION_ADMIN_BEARER_TOKEN"
 ENV_FILE = Path.home() / ".ai-beidou" / "state.env"
 CREATE_PATH = "/openapi/v1/short-drama-clip-tasks"
+AUTO_CLIP_TASKS_PATH = "/api/short-drama-auto-clip/tasks"
+FREE_VIDEO_TASKS_PATH = "/api/short-drama-free-video/tasks"
 FINAL_TASK_STATUSES = {"success", "failed", "cancelled"}
 FINAL_CLIP_STATUSES = {"success", "failed", "cancelled"}
 SEGMENT_SUCCESS_STATUS = "success"
@@ -60,6 +64,43 @@ DEFAULT_SYNC_MATERIAL_CATEGORY_ID = max(
     0,
     int(os.getenv("BARRY_AI_ANIMATION_SYNC_MATERIAL_CATEGORY_ID", "0") or 0),
 )
+ADMIN_RUNNING_STATUSES = {
+    "queued",
+    "queue",
+    "running",
+    "processing",
+    "pending",
+    "waiting",
+    "in_progress",
+    "download_running",
+    "clip_running",
+}
+ADMIN_SUCCESS_STATUSES = {
+    "success",
+    "done",
+    "completed",
+    "finished",
+    "all_success",
+    "全部成功",
+    "成功",
+    "完成",
+}
+ADMIN_FAILED_STATUSES = {
+    "failed",
+    "failure",
+    "error",
+    "cancelled",
+    "canceled",
+    "skipped",
+    "partial_failed",
+    "all_failed",
+    "下载失败",
+    "剪辑失败",
+    "失败",
+    "全部失败",
+    "已跳过",
+    "跳过",
+}
 
 
 class AiCutAnimationError(RuntimeError):
@@ -124,6 +165,27 @@ def resolve_secret_key() -> str:
     return resolve_config_value(SECRET_KEY_ENV)
 
 
+def resolve_optional_config_value(env_name: str) -> str:
+    env_value = os.getenv(env_name, "").strip()
+    if env_value:
+        return env_value
+    return read_dotenv(shared_env_file()).get(env_name, "").strip()
+
+
+def resolve_admin_base_url() -> str:
+    value = resolve_optional_config_value(ADMIN_BASE_URL_ENV)
+    if value:
+        return value.rstrip("/")
+    try:
+        return resolve_base_url()
+    except AiCutAnimationError:
+        return ""
+
+
+def resolve_admin_bearer_token() -> str:
+    return resolve_optional_config_value(ADMIN_BEARER_TOKEN_ENV)
+
+
 def _body_hash(body: bytes) -> str:
     return hashlib.sha256(body).hexdigest()
 
@@ -178,6 +240,261 @@ def request_json(
         return response.json()
     except ValueError as exc:
         raise AiCutAnimationError(f"ai-cut 返回非 JSON: {response.text}") from exc
+
+
+def request_admin_json(
+    method: str,
+    path: str,
+    *,
+    params: dict[str, Any] | None = None,
+    timeout: int = DEFAULT_REQUEST_TIMEOUT,
+) -> Any:
+    base_url = resolve_admin_base_url()
+    bearer_token = resolve_admin_bearer_token()
+    if not base_url or not bearer_token:
+        raise AiCutAnimationError("缺少 ai-cut 管理端访问配置")
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Authorization": f"Bearer {bearer_token}",
+    }
+    try:
+        response = requests.request(
+            method=method.upper(),
+            url=f"{base_url}{path}",
+            headers=headers,
+            params=params,
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        raise AiCutAnimationError(f"ai-cut 管理端请求失败: {exc}") from exc
+    if response.status_code >= 400:
+        raise AiCutAnimationError(f"ai-cut 管理端 HTTP {response.status_code}: {response.text}")
+    if not response.text.strip():
+        return None
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise AiCutAnimationError(f"ai-cut 管理端返回非 JSON: {response.text}") from exc
+
+
+def _is_admin_task_not_found_error(error: Exception) -> bool:
+    message = str(error or "").lower()
+    return any(
+        marker in message
+        for marker in (
+            "任务不存在",
+            "task not found",
+            "not found",
+            "http 404",
+        )
+    )
+
+
+def _extract_admin_records(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [dict(item) for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+
+    for key in ("list", "rows", "items", "records", "results"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [dict(item) for item in value if isinstance(item, dict)]
+
+    for key in ("data", "result"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [dict(item) for item in value if isinstance(item, dict)]
+        if isinstance(value, dict):
+            nested = _extract_admin_records(value)
+            if nested:
+                return nested
+    return []
+
+
+def _select_admin_record(records: list[dict[str, Any]], source_external_task_id: str) -> dict[str, Any] | None:
+    normalized = str(source_external_task_id or "").strip()
+    if not normalized:
+        return None
+    match_keys = (
+        "source_external_task_id",
+        "sourceTaskId",
+        "source_task_id",
+        "related_task_id",
+        "relation_task_id",
+        "associated_task_id",
+        "external_task_id",
+        "third_task_id",
+        "task_id",
+        "taskId",
+    )
+    for record in records:
+        for key in match_keys:
+            if str(record.get(key) or "").strip() == normalized:
+                return dict(record)
+    if len(records) == 1:
+        return dict(records[0])
+    return None
+
+
+def _normalize_admin_status(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    return lowered or text
+
+
+def _admin_record_status(record: dict[str, Any]) -> str:
+    for key in ("status", "task_status", "download_status", "clip_status", "state"):
+        status = _normalize_admin_status(record.get(key))
+        if status:
+            return status
+    return ""
+
+
+def _record_int(record: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value = record.get(key)
+        if value is None or value == "":
+            continue
+        try:
+            return int(float(str(value)))
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _admin_status_category(record: dict[str, Any]) -> str:
+    status = _admin_record_status(record)
+    if status in ADMIN_SUCCESS_STATUSES:
+        return "success"
+    if status in ADMIN_FAILED_STATUSES:
+        return "failed"
+    if status in ADMIN_RUNNING_STATUSES:
+        return "running"
+
+    success_count = _record_int(record, "success_count", "success_num", "success_total", "succeed_count")
+    failed_count = _record_int(record, "failed_count", "fail_count", "error_count", "failed_num")
+    skipped_count = _record_int(record, "skipped_count", "skip_count")
+    total_count = _record_int(record, "total_count", "total_num", "count")
+
+    if success_count and total_count and success_count >= total_count and not (failed_count or skipped_count):
+        return "success"
+    if (failed_count and failed_count > 0) or (skipped_count and skipped_count > 0):
+        return "failed"
+    return "running"
+
+
+def _admin_record_reason(record: dict[str, Any]) -> str:
+    for key in (
+        "reason",
+        "message",
+        "error",
+        "last_error",
+        "error_message",
+        "fail_reason",
+        "failed_reason",
+        "remark",
+    ):
+        value = str(record.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _admin_record_summary(task_kind: str, record: dict[str, Any]) -> str:
+    label = "下载任务" if task_kind == "free_video" else "剪辑任务"
+    status = _admin_record_status(record) or "unknown"
+    reason = _admin_record_reason(record)
+    if reason:
+        return f"ai-cut {label}状态={status}，原因={reason}"
+    return f"ai-cut {label}状态={status}"
+
+
+def _query_admin_task_record(
+    path: str,
+    *,
+    source_external_task_id: str,
+    timeout: int,
+) -> dict[str, Any] | None:
+    normalized = str(source_external_task_id or "").strip()
+    if not normalized:
+        return None
+    params = {
+        "limit": 20,
+        "offset": 0,
+    }
+    if path == FREE_VIDEO_TASKS_PATH:
+        params["external_task_id"] = normalized
+    else:
+        params["source_external_task_id"] = normalized
+    try:
+        response = request_admin_json(
+            "GET",
+            path,
+            params=params,
+            timeout=timeout,
+        )
+    except AiCutAnimationError as exc:
+        # The management UI has separate tables for download and auto-clip.
+        # A missing row in one table is not a task failure; keep checking the
+        # other table and the signed OpenAPI result.
+        if _is_admin_task_not_found_error(exc):
+            return None
+        raise
+    records = _extract_admin_records(response)
+    return _select_admin_record(records, source_external_task_id)
+
+
+def get_admin_task_snapshots(
+    task_id: str,
+    *,
+    timeout: int = DEFAULT_REQUEST_TIMEOUT,
+) -> dict[str, dict[str, Any]]:
+    normalized = str(task_id or "").strip()
+    if not normalized:
+        return {}
+    snapshots: dict[str, dict[str, Any]] = {}
+    try:
+        free_video = _query_admin_task_record(
+            FREE_VIDEO_TASKS_PATH,
+            source_external_task_id=normalized,
+            timeout=timeout,
+        )
+    except AiCutAnimationError:
+        free_video = None
+    if isinstance(free_video, dict):
+        snapshots["free_video"] = free_video
+    try:
+        auto_clip = _query_admin_task_record(
+            AUTO_CLIP_TASKS_PATH,
+            source_external_task_id=normalized,
+            timeout=timeout,
+        )
+    except AiCutAnimationError:
+        auto_clip = None
+    if isinstance(auto_clip, dict):
+        snapshots["auto_clip"] = auto_clip
+    return snapshots
+
+
+def raise_if_admin_task_failed(
+    task_id: str,
+    *,
+    request_timeout: int = DEFAULT_REQUEST_TIMEOUT,
+) -> None:
+    snapshots = get_admin_task_snapshots(task_id, timeout=request_timeout)
+    free_video = snapshots.get("free_video")
+    if isinstance(free_video, dict) and _admin_status_category(free_video) == "failed":
+        raise AiCutAnimationError(
+            f"ai-cut 任务已失败: task_id={task_id}, {_admin_record_summary('free_video', free_video)}"
+        )
+    auto_clip = snapshots.get("auto_clip")
+    if isinstance(auto_clip, dict) and _admin_status_category(auto_clip) == "failed":
+        raise AiCutAnimationError(
+            f"ai-cut 任务已失败: task_id={task_id}, {_admin_record_summary('auto_clip', auto_clip)}"
+        )
 
 
 def create_short_drama_clip_task(
@@ -248,8 +565,10 @@ def wait_for_short_drama_clip_task(
     deadline = time.time() + max(1, timeout)
     last_body: dict[str, Any] = {}
     while time.time() < deadline:
+        raise_if_admin_task_failed(task_id, request_timeout=request_timeout)
         body = get_short_drama_clip_task(task_id, timeout=request_timeout)
         last_body = body
+        raise_if_openapi_task_failed(body)
         status = str(body.get("status") or "").strip().lower()
         if status in FINAL_TASK_STATUSES and _clip_results_ready(body):
             return body
@@ -258,9 +577,11 @@ def wait_for_short_drama_clip_task(
     # success immediately after the last queued poll.
     body = get_short_drama_clip_task(task_id, timeout=request_timeout)
     last_body = body
+    raise_if_openapi_task_failed(body)
     status = str(body.get("status") or "").strip().lower()
     if status in FINAL_TASK_STATUSES and _clip_results_ready(body):
         return body
+    raise_if_admin_task_failed(task_id, request_timeout=request_timeout)
     raise AiCutAnimationError(f"ai-cut 任务超时未完成: task_id={task_id}, last_status={last_body.get('status')}")
 
 
@@ -290,6 +611,24 @@ def _clip_results_ready(body: dict[str, Any]) -> bool:
         elif download_status == "success":
             return False
     return True
+
+
+def raise_if_openapi_task_failed(body: dict[str, Any]) -> None:
+    status = str(body.get("status") or "").strip().lower()
+    serials = body.get("serials")
+    if isinstance(serials, list):
+        for serial in serials:
+            payload = serial if isinstance(serial, dict) else {}
+            download_status = str(payload.get("download_status") or "").strip().lower()
+            clip = payload.get("clip")
+            if download_status in {"failed", "skipped"} and not isinstance(clip, dict):
+                raise AiCutAnimationError(describe_serial_failure(payload))
+            if isinstance(clip, dict):
+                clip_status = str(clip.get("status") or "").strip().lower()
+                if clip_status in {"failed", "cancelled"}:
+                    raise AiCutAnimationError(describe_serial_failure(payload))
+    if status in {"failed", "cancelled"}:
+        raise AiCutAnimationError(f"ai-cut 任务已失败: task_id={body.get('task_id')}, status={status}")
 
 
 def choose_success_segment(serial_payload: dict[str, Any], *, preferred_episode_order: int) -> dict[str, Any] | None:
@@ -335,6 +674,9 @@ def wait_for_serial_success_segment(
         return last_task_body, None, None
 
     while time.time() < deadline:
+        raise_if_admin_task_failed(task_id, request_timeout=request_timeout)
+        if last_task_body:
+            raise_if_openapi_task_failed(last_task_body)
         if last_task_body:
             for payload in (last_task_body.get("serials") or []):
                 if str((payload or {}).get("third_serial_id") or "").strip() != normalized_serial_id:
@@ -353,8 +695,11 @@ def wait_for_serial_success_segment(
                 break
         time.sleep(max(1.0, float(poll_interval)))
         last_task_body = get_short_drama_clip_task(task_id, timeout=request_timeout)
+        raise_if_openapi_task_failed(last_task_body)
     # Final recheck at the timeout boundary for the same reason as above.
+    raise_if_admin_task_failed(task_id, request_timeout=request_timeout)
     last_task_body = get_short_drama_clip_task(task_id, timeout=request_timeout)
+    raise_if_openapi_task_failed(last_task_body)
     for payload in (last_task_body.get("serials") or []):
         if str((payload or {}).get("third_serial_id") or "").strip() != normalized_serial_id:
             continue

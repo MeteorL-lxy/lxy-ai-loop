@@ -32,6 +32,18 @@ def _dedup_list_zh(values) -> str:
     return "、".join(_dedup_zh(str(value)) for value in (values or []))
 
 
+def _unique_in_order(values) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values or []:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
 def _task_keys(tasks: list[dict]) -> set[tuple[str, str]]:
     return {
         (str(task.get("team_id") or ""), str(task.get("task_id") or ""))
@@ -420,6 +432,20 @@ def _failed_publish_suggestions_zh(report: dict) -> list[str]:
             for token in ["超时", "请求失败", "Connection aborted", "Read timed out", "write operation timed out"]
         )
     ]
+    clipping_stage_like = [
+        item
+        for item in failed_reports
+        if any(
+            token in str(item.get("失败原因") or item.get("错误") or "").lower()
+            for token in ["ai-cut", "ffprobe", "download_status", "skipped"]
+        )
+        or any(
+            token in str(item.get("失败原因") or item.get("错误") or "")
+            for token in ["剪辑", "素材", "下载状态", "上传短剧集数素材"]
+        )
+    ]
+    publish_timeout_like = [item for item in timeout_like if item not in clipping_stage_like]
+    publish_retryable = [item for item in retryable if item not in clipping_stage_like]
     suggestions: list[str] = []
     if unsupported_accounts:
         suggestions.append(
@@ -428,22 +454,28 @@ def _failed_publish_suggestions_zh(report: dict) -> list[str]:
             + (" 等" if len(unsupported_accounts) > 8 else "")
             + "，这类失败继续重试也不会成功。"
         )
-    if timeout_like:
+    if clipping_stage_like:
         suggestions.append(
-            f"对超时/请求失败的 {len(timeout_like)} 条，优先只做“发布重试”，不要重新剪辑；本地成片已保留，建议放在接口更稳定时段或降低发布并发后再补发。"
+            f"有 {len(clipping_stage_like)} 条停在素材/剪辑阶段，尚未进入发布；不要走发布重试，优先换素材、重建 ai-cut 任务，或等 ai-cut/素材服务恢复后再跑。"
+        )
+    if publish_timeout_like:
+        suggestions.append(
+            f"对发布阶段超时/请求失败的 {len(publish_timeout_like)} 条，优先只做“发布重试”，不要重新剪辑；本地成片已保留，建议放在接口更稳定时段或降低发布并发后再补发。"
         )
     if processing > 0:
         suggestions.append(
             f"当前还有 {processing} 条处于处理中，先去发布记录确认最终状态；只有确认未成功后再补发，避免重复发帖。"
         )
-    if retryable:
+    if publish_retryable:
         suggestions.append(
-            f"本轮仍有 {len(retryable)} 条具备自动重试条件，建议先清掉账号能力问题，再只重试这些可重试任务。"
+            f"本轮仍有 {len(publish_retryable)} 条发布阶段失败具备自动重试条件，建议先清掉账号能力问题，再只重试这些可重试任务。"
         )
     if total > 0:
         success_rate = success / total
         if success_rate < 0.6:
-            if len(non_retryable) >= len(timeout_like):
+            if clipping_stage_like:
+                suggestions.append("本轮主要问题更偏素材/剪辑链路，不是发布侧；优先处理 ai-cut 状态判定、素材可用性和剪辑服务稳定性。")
+            elif len(non_retryable) >= len(timeout_like):
                 suggestions.append("本轮主要问题更偏账号能力，不建议先改选剧或剪辑手法，先把账号池清洗干净再扩大批量。")
             else:
                 suggestions.append("本轮主要问题更偏发布链路稳定性，下一轮建议降低发布并发或拆成更小批次，再观察成功率。")

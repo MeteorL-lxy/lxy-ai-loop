@@ -16,6 +16,9 @@
 | 字段名 | 标记 | 说明 | 示例值 |
 |--------|------|------|--------|
 | date | 🕐 | 日期 | "2026-06-10" |
+| loop_name | A | loop 项目名，用于看板聚合 | "steven-jiao-ai-loop" |
+| round_name | A | loop 执行轮次，用于最新轮次统计 | "round-20260622-01" |
+| ab_group | A | A/B 分组 | "A" |
 | short_link_publish_time | 🕐 | 短链接发布时间 | "2026-06-10 14:30:00" |
 | assignee | ○ | 负责人(人员) | "张三" |
 | assignee_source | ○ | 负责人识别来源 | "record" / "uid" / "team_id" / "social_account_id" / "account" / "fallback" / "unresolved" |
@@ -23,6 +26,8 @@
 | task_id | A+ | 任务唯一标识 | "task_20260610_001" |
 | douyin_t8_account | ○ | 抖T8账号简称 | "好剧推荐001" |
 | channel_id | A | channel_id | "ch_889012" |
+| social_account_id | A+ | 平台账号 ID，账号统计优先 key | "3951334425172613" |
+| daily_publish_target | # | 当天发布目标数，用于计算未发布缺口 | 2540 |
 
 ## 阶段二：选剧/视频信息
 
@@ -30,8 +35,10 @@
 |--------|------|------|--------|
 | account_type | ○ | 账号类型 | "个人号" / "企业号" |
 | clip_tool | ○ | 剪辑工具 | "剪映" / "Premiere" |
+| round_clip_tools | A | 本轮使用的剪辑工具集合，JSON 数组或逗号分隔 | "[\"auto_editing\"]" |
 | drama_name | A | 选剧名称 | "庆余年" |
 | drama_timestamp | 🕐 | 选剧时间戳 | "2026-06-10 10:15:00" |
+| round_account_count | # | 本轮计划发布账号数 | 254 |
 | preview_duration_sec | # | 预览视频时长(s) | 60 |
 | preview_size_mb | # | 预览视频大小(MB) | 45.2 |
 
@@ -40,6 +47,8 @@
 | 字段名 | 标记 | 说明 | 示例值 |
 |--------|------|------|--------|
 | material_source | ○ | 素材来源 | "本地导入" / "云端" / "第三方" |
+| clip_status | ○ | 剪辑状态 | "completed" / "queued" / "clipping" |
+| clip_last_status | ○ | 剪辑引擎最后状态，兼容外部队列状态 | "queued" / "processing" / "done" |
 | clip_start_time | 🕐 | 剪辑开始时间 | "2026-06-10 10:20:00" |
 | clip_end_time | 🕐 | 剪辑结束时间 | "2026-06-10 10:22:30" |
 | clip_duration_sec | # | 剪辑耗时(s) | 150 |
@@ -63,6 +72,8 @@
 |--------|------|------|--------|
 | publish_req_start_time | 🕐 | 发布请求开始时间 | "2026-06-10 11:00:00" |
 | publish_req_end_time | 🕐 | 发布请求结束时间 | "2026-06-10 11:00:35" |
+| publish_schedule_start_time | 🕐 | 计划开始发布时间 | "2026-06-22 19:00:00" |
+| publish_interval_sec | # | 账号发布间隔秒数 | 120 |
 | publish_duration_sec | # | 发布耗时(s) | 35 |
 | social_post_id | A+ | 发布平台post_id | "post_dy_88901234" |
 | publish_status | ○ | 发布状态 | "成功" / "失败" / "审核中" |
@@ -83,7 +94,14 @@
 - `success` — 成功
 - `failed` — 失败
 - `reviewing` — 审核中
+- `pending` — 待执行
 - `cancelled` — 已取消
+
+`publish_status` 是原始任务状态，不等同于 dashboard 展示状态。dashboard 发布节点按派生口径展示：
+
+- `published` / 已发布：当天 `publish_status=success`
+- `prepublish` / 预发布：`short_link_publish_time` 有值且 `publish_status` 不在 `failed`、`cancelled`、`error`
+- `unpublished` / 未发布：`daily_publish_target - published_count`
 
 ### fail_stage（失败阶段）
 - `upload` — 上传阶段
@@ -101,6 +119,13 @@
 - `premiere` — Premiere
 - `finalcut` — Final Cut
 - `auto` — 自动化剪辑
+- `auto_editing` — AI 自动剪辑
+
+### clip_status（剪辑状态）
+- `completed` — 剪辑完成
+- `queued` — 排队中
+- `clipping` — 剪辑中
+- `failed` — 剪辑失败
 
 ### material_source（素材来源）
 - `local` — 本地导入
@@ -220,3 +245,29 @@ owner,uid,team_id,social_account_id,account,social_name
 | round_name / ab_group | 关联轮次和实验组 |
 | severity | `info` / `success` / `warn` / `error` |
 | metric_json | 指标 JSON |
+
+## Dashboard 节点指标派生口径
+
+以下字段是 dashboard 或统计脚本的派生指标，不一定都需要作为数据库列入库；但对应原始字段必须尽量完整。
+
+| 指标 | 口径 | 依赖原始字段 |
+|------|------|-------------|
+| window_selected_drama_count | 最近 30 分钟选剧数，按短剧去重 | `drama_name`, `drama_timestamp`, `update_time` |
+| round_selected_drama_count | 最新轮次选剧数，按短剧去重 | `round_name`, `drama_name` |
+| round_target_account_count | 最新轮次要发布账号数，按稳定账号 key 去重 | `round_name`, `social_account_id`, `douyin_t8_account`, `channel_id`, `uid` |
+| round_clip_tools | 最新轮次剪辑工具集合 | `round_name`, `clip_tool` |
+| clip_done_count | 已有剪辑产物或已进入发布链路 | `clip_end_time`, `output_duration_sec`, `output_size_mb`, `social_post_id`, `publish_status` |
+| clip_queued_count | 剪辑队列中 | `clip_status`, `clip_last_status`, `publish_fail_reason`, `clip_fail_reason` |
+| clipping_count | 已开始但未完成、未失败、未排队 | `clip_start_time`, `clip_status`, `clip_last_status`, `publish_status` |
+| published_today_count | 当天已发布 | `date`, `publish_status` |
+| publish_scheduled_count | 已做预发布/排期 | `short_link_publish_time`, `publish_status` |
+| unpublished_target_gap_count | 未发布缺口 | `daily_publish_target`, `publish_status` |
+| publish_start_time | 计划开始发布时间 | `publish_schedule_start_time`, `publish_start_time`, `short_link_publish_time` |
+| publish_account_interval_seconds | 账号发布间隔 | `publish_interval_sec`, `publish_account_interval_seconds` |
+
+写入质量要求：
+
+- `loop_name`、`round_name`、`ab_group` 尽量写顶层字段，不只藏在 `clip_params`。
+- `daily_publish_target` 要来自 loop 当天目标或策略包账号计划；没有目标时，未发布缺口只能退化为命中行数减已发布。
+- 排队状态不要只写自然语言；建议写 `clip_last_status=queued` 或标准 `clip_status=queued`。
+- `short_link_publish_time` 用作预发布/排期判断时，失败、取消、错误任务不能计入有效预发布。

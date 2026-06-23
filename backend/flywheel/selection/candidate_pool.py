@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import random
 from typing import Any
 
@@ -9,6 +10,14 @@ from ..config import FlywheelConfig
 from ..scoring.dimensions import parse_tags
 from .fb_heat_signal import apply_fb_heat_signal, load_fb_heat_signal
 from .realtime_rank_source import fetch_realtime_rank_candidates
+
+
+REALTIME_RANK_CANDIDATE_LINES = {"realtime", "realtime_day", "realtime_single"}
+
+
+def _line_allows_realtime_rank_candidates() -> bool:
+    line_name = str(os.getenv("BARRY_LOOP_LINE_NAME") or "").strip().lower()
+    return line_name in REALTIME_RANK_CANDIDATE_LINES
 
 
 def extract_third_serial_id(item: dict[str, Any]) -> str:
@@ -212,12 +221,14 @@ def fetch_candidates(
     active_languages = list(target_languages)
     deduped_candidates: list[dict[str, Any]] = []
 
-    realtime_candidates = fetch_realtime_rank_candidates(
-        config,
-        target_publish_platforms=target_publish_platforms,
-        search=search,
-        target_size=target_size,
-    )
+    realtime_candidates = []
+    if _line_allows_realtime_rank_candidates():
+        realtime_candidates = fetch_realtime_rank_candidates(
+            config,
+            target_publish_platforms=target_publish_platforms,
+            search=search,
+            target_size=target_size,
+        )
     for row in realtime_candidates:
         normalized = apply_fb_heat_signal(normalize_candidate(row), fb_heat_signal)
         if target_platform and str(normalized.get("app_id") or "").strip() != str(target_platform).strip():

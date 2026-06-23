@@ -6,5 +6,6 @@
   "loop_name": "liuxinyu-ai-loop",
   "account_type": "FACEBOOK",
   "execute": true,
-  "min_accounts": 0
+  "min_accounts": 0,
+  "publish_interval_seconds": 120
 }
