@@ -23,6 +23,7 @@ LINE_ORDER = [
     "fbhot_test",
     "yourchannel",
     "recent_order",
+    "stardusttv",
 ]
 LINE_PATTERN = "|".join(LINE_ORDER)
 

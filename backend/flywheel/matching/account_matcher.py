@@ -59,6 +59,7 @@ def match_accounts(
                     "agent_id": account.get("owner_agent_id") or account["agent_id"],
                     "team_id": account.get("team_id") or "",
                     "serial_id": pick["serial_id"],
+                    "title": pick.get("title") or "",
                     "platform": account["platform"],
                     "caption": "",
                     "status": "pending",

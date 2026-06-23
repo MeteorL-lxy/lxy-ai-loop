@@ -29,6 +29,7 @@ def _ensure_vertical_publish_file(local_clip_path: str, *, target_width: int, ta
 
 def _build_publish_payload(plan: dict[str, Any], file_url: str) -> dict[str, Any]:
     scheduled_at = str(plan.get("scheduled_at") or "").strip()
+    title = str(plan.get("title") or "").strip()
     payload = {
         "team_id": str(plan.get("team_id") or ""),
         "text": str(plan.get("caption") or ""),
@@ -36,6 +37,8 @@ def _build_publish_payload(plan: dict[str, Any], file_url: str) -> dict[str, Any
         "post_status": 1 if scheduled_at else 0,
         "social_type": str(plan.get("platform") or ""),
     }
+    if title:
+        payload["title"] = title
     if scheduled_at:
         payload["post_date"] = scheduled_at
     if payload["social_type"] in {"FACEBOOK", "INSTAGRAM"}:

@@ -25,6 +25,7 @@ def _line_name_zh(value: str) -> str:
     return {
         "realtime": "实时榜线",
         "ordinary": "普通池线",
+        "stardusttv": "StardustTV 剧场线",
     }.get(raw, raw)
 
 

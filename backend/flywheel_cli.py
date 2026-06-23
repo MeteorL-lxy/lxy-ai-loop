@@ -3213,14 +3213,17 @@ def cmd_run_local(args: argparse.Namespace) -> None:
         "target_aspect_ratio": "9:16",
     }
     caption = _resolve_local_caption(args, source_path.stem)
+    title = str(getattr(args, "title", "") or "").strip() or source_path.stem
     account_items = list(target.get("accounts") or [])
     publish_items = [
         {
             "index": index + 1,
             "source_path": str(source_path),
             "account": dict(account),
+            "title": title,
             "caption": caption,
             "promotion": {
+                "title": title,
                 "caption": caption,
                 "promotion_link": "",
                 "promotion_code": "",
@@ -4646,6 +4649,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Target platform selected by the user, such as TIKTOK. Required for real publish.",
     )
+    run_local.add_argument("--title", default="", help="Publish title. Defaults to the source file name.")
     run_local.add_argument("--text", default="", help="Publish caption. Defaults to the source file name.")
     run_local.add_argument("--text-file", default=None, help="Read publish caption from a UTF-8 file.")
     run_local.add_argument("--schedule-at", default=None, help="Optional scheduled publish time.")

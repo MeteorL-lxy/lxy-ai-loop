@@ -24,6 +24,7 @@ LINE_LABELS = {
     "fbhot_test": "FB 热测线",
     "yourchannel": "YourChannel 线",
     "recent_order": "近月出单剧线",
+    "stardusttv": "StardustTV 线",
 }
 
 

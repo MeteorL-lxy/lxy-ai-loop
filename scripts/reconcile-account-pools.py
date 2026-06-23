@@ -27,6 +27,7 @@ MANAGED_POOLS = (
     "facebook_drama_fbhot_test_pool",
     "facebook_drama_yourchannel_pool",
     "facebook_drama_recent_order_pool",
+    "facebook_drama_stardusttv_pool",
 )
 
 

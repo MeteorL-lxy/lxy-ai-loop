@@ -4,11 +4,12 @@ set -euo pipefail
 ROOT_DIR="${LOOP_ROOT:-/Users/xinyuliu/Desktop/work/barry-video}"
 cd "$ROOT_DIR"
 
-REPORT_DATE="${1:-$(date +%F)}"
+REPORT_DATE="${REPORT_DATE:-${1:-$(date +%F)}}"
 TRACKER_DIR="$ROOT_DIR/tools/video-pipeline-tracker"
 CONFIG_FILE="$ROOT_DIR/conf/video_pipeline_tracker.json"
-OUT_DIR="$ROOT_DIR/runtime/video-pipeline-tracker/$REPORT_DATE"
+OUT_DIR="${OUT_DIR:-$ROOT_DIR/runtime/video-pipeline-tracker/$REPORT_DATE}"
 TASKS_JSON="$OUT_DIR/tasks-liuxinyu-ai-loop-$REPORT_DATE.json"
+META_JSON="$OUT_DIR/tasks-liuxinyu-ai-loop-$REPORT_DATE.meta.json"
 
 read_config() {
   local key="$1"
@@ -33,20 +34,23 @@ OWNER="${OWNER:-$(read_config owner 刘心雨)}"
 UID_VALUE="${UID_VALUE:-$(read_config uid 9402541668)}"
 LOOP_NAME="${LOOP_NAME:-$(read_config loop_name liuxinyu-ai-loop)}"
 PUBLISH_INTERVAL_SECONDS="${PUBLISH_INTERVAL_SECONDS:-$(read_config publish_interval_seconds 120)}"
+DAILY_TARGET="${DAILY_TARGET:-$(read_config daily_target "")}"
+PUBLISH_START_TIME="${PUBLISH_START_TIME:-$(read_config publish_start_time "")}"
 EXECUTE="${EXECUTE:-0}"
 FILTER_WINDOW="${FILTER_WINDOW:-0}"
 STRICT="${STRICT:-0}"
 
 mkdir -p "$OUT_DIR"
 
-python3 - "$REPORT_DATE" "$TASKS_JSON" <<'PY'
+python3 - "$REPORT_DATE" "$TASKS_JSON" "$META_JSON" <<'PY'
 import hashlib
 import json
 import sys
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
-report_date, output = sys.argv[1], Path(sys.argv[2])
+report_date, output, meta_output = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
 root = Path("runtime/continuous-loop") / report_date
 rows = []
 sources = []
@@ -66,6 +70,17 @@ def load_rows(path: Path):
             return [], ""
         return [data], ""
     return [], f"{path}: unsupported json shape"
+
+def parse_dt(value):
+    raw = str(value or "").strip().replace("T", " ")[:19]
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return None
 
 for path in sorted(root.glob("*/*/tasks.json")):
     loaded, warning = load_rows(path)
@@ -106,8 +121,45 @@ output.write_text(
     json.dumps({"rows": rows, "sources": sources}, ensure_ascii=False, indent=2),
     encoding="utf-8",
 )
-print(json.dumps({"output": str(output), "rows": len(rows), "source_files": len(sources)}, ensure_ascii=False))
+times = []
+for row in rows:
+    for field in ("update_time", "drama_timestamp", "short_link_publish_time", "publish_req_start_time", "date"):
+        parsed = parse_dt(row.get(field))
+        if parsed:
+            times.append(parsed)
+            break
+meta = {
+    "output": str(output),
+    "rows": len(rows),
+    "source_files": len(sources),
+    "inferred_daily_target": len(rows),
+    "inferred_publish_start_time": min(times).strftime("%Y-%m-%d %H:%M:%S") if times else f"{report_date} 00:00:00",
+}
+meta_output.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+print(json.dumps(meta, ensure_ascii=False))
 PY
+
+if [[ -z "$DAILY_TARGET" ]]; then
+  DAILY_TARGET="$(python3 - "$META_JSON" <<'PY'
+import json
+import sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(data.get("inferred_daily_target") or "")
+PY
+)"
+fi
+
+if [[ -z "$PUBLISH_START_TIME" ]]; then
+  PUBLISH_START_TIME="$(python3 - "$META_JSON" <<'PY'
+import json
+import sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(data.get("inferred_publish_start_time") or "")
+PY
+)"
+fi
 
 cmd=(
   python3 "$TRACKER_DIR/scripts/report_half_hour_loop.py"
@@ -116,17 +168,11 @@ cmd=(
   --owner "$OWNER"
   --uid "$UID_VALUE"
   --loop-name "$LOOP_NAME"
+  --daily-target "$DAILY_TARGET"
+  --publish-start-time "$PUBLISH_START_TIME"
   --publish-interval-seconds "$PUBLISH_INTERVAL_SECONDS"
   --output-dir "$OUT_DIR/half-hour-reports"
 )
-
-if [[ "${DAILY_TARGET:-}" != "" ]]; then
-  cmd+=(--daily-target "$DAILY_TARGET")
-fi
-
-if [[ "${PUBLISH_START_TIME:-}" != "" ]]; then
-  cmd+=(--publish-start-time "$PUBLISH_START_TIME")
-fi
 
 if [[ "$FILTER_WINDOW" == "1" ]]; then
   cmd+=(--filter-window)

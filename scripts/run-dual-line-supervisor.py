@@ -162,6 +162,20 @@ LINE_CONFIGS = {
         "error_sleep_seconds": _env("BARRY_LOOP_RECENT_ORDER_ERROR_SLEEP_SECONDS", "20"),
         "log": TMP_DIR / "forever_recent_order.log",
     },
+    "stardusttv": {
+        "enabled": _env("BARRY_LOOP_STARDUSTTV_ENABLED", "1"),
+        "pool": _env("BARRY_LOOP_STARDUSTTV_ACCOUNT_POOL", "facebook_drama_stardusttv_pool"),
+        "count": _env("BARRY_LOOP_STARDUSTTV_COUNT", "0"),
+        "flywheel_config": str(os.getenv("BARRY_LOOP_STARDUSTTV_FLYWHEEL_CONFIG") or "conf/flywheel_stardusttv.yaml").strip(),
+        "fb_heat_signal_file": str(os.getenv("BARRY_LOOP_STARDUSTTV_FB_HEAT_SIGNAL_FILE") or "").strip(),
+        "realtime_enabled": _env("BARRY_LOOP_STARDUSTTV_RANK_ENABLED", "0"),
+        "realtime_material_only": _env("BARRY_LOOP_STARDUSTTV_MATERIAL_ONLY", "0"),
+        "creative_list_material_only": _env("BARRY_LOOP_STARDUSTTV_CREATIVE_LIST_MATERIAL_ONLY", "0"),
+        "sleep_seconds": _env("BARRY_LOOP_STARDUSTTV_SLEEP_SECONDS", "45"),
+        "idle_sleep_seconds": _env("BARRY_LOOP_STARDUSTTV_IDLE_SLEEP_SECONDS", "300"),
+        "error_sleep_seconds": _env("BARRY_LOOP_STARDUSTTV_ERROR_SLEEP_SECONDS", "20"),
+        "log": TMP_DIR / "forever_stardusttv.log",
+    },
 }
 
 

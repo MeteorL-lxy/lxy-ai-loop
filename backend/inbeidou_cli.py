@@ -2928,6 +2928,16 @@ def get_publish_text(args):
     raise InbeidouError("缺少帖子内容，请传 --text 或 --text-file")
 
 
+def get_publish_title(args):
+    title = str(getattr(args, "title", "") or "").strip()
+    if title:
+        return title
+    file_value = str(getattr(args, "file", "") or "").strip()
+    if file_value:
+        return Path(file_value).expanduser().stem.strip()
+    return ""
+
+
 def resolve_publish_file_url(args):
     if getattr(args, "file", None):
         return upload_publish_file(args.file)["publish_file_url"]
@@ -3002,6 +3012,7 @@ def build_publish_payload(args):
     target = resolve_publish_targets(args)
     file_url = resolve_publish_file_url(args)
     text = get_publish_text(args)
+    title = get_publish_title(args)
     post_date = parse_schedule_at(getattr(args, "schedule_at", None))
 
     payload = {
@@ -3011,6 +3022,8 @@ def build_publish_payload(args):
         "post_status": PUBLISH_POST_STATUS_VALUE["scheduled" if post_date else "published"],
         "social_type": target["social_type"],
     }
+    if title:
+        payload["title"] = title
     if post_date:
         payload["post_date"] = post_date
     if target["social_type"] in {"FACEBOOK", "INSTAGRAM"}:
@@ -3990,6 +4003,7 @@ def _publish_novel_video(args, result, novel=None, promotion=None):
         team_id=team_ids,
         account_pool=account_pool,
         platform=publish_platform,
+        title=str(promotion.get("title") or novel_title).strip(),
         text=text,
         text_file=getattr(args, "text_file", None),
         file=local_video_file,
@@ -5152,6 +5166,7 @@ def build_parser():
     publish_create.add_argument("--account-id", action="append", help="发布账号 ID，可重复或逗号分隔")
     publish_create.add_argument("--team-id", action="append", help="team_id，可重复或逗号分隔")
     publish_create.add_argument("--platform", help=f"使用 --team-id 时指定平台，可选: {', '.join(PUBLISH_SOCIAL_TYPES)}")
+    publish_create.add_argument("--title", help="帖子标题")
     publish_create.add_argument("--text", help="帖子内容")
     publish_create.add_argument("--text-file", help="从文件读取帖子内容")
     publish_create.add_argument("--file", help="本地视频文件路径；传入后会先上传")

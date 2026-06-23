@@ -58,6 +58,7 @@ LINE_LABELS = {
     "realtime_single": "实时榜定账号",
     "yourchannel": "YourChannel",
     "recent_order": "近月出单剧",
+    "stardusttv": "夜间 StardustTV",
 }
 
 LINE_POOL_KEYS = {
@@ -70,44 +71,49 @@ LINE_POOL_KEYS = {
     "fbhot_test": "facebook_drama_fbhot_test_pool",
     "yourchannel": "facebook_drama_yourchannel_pool",
     "recent_order": "facebook_drama_recent_order_pool",
+    "stardusttv": "facebook_drama_stardusttv_pool",
 }
 
 ACCOUNT_GROUP_META = {
     "facebook_drama_realtime_pool": {
-        "label": "实时榜账号池",
+        "label": "实时榜素材ff池-夜间",
         "description": "夜间实时榜线专用池，当前固定 30 个账号，承接实时榜外部素材发布。",
     },
     "facebook_drama_realtime_day_pool": {
-        "label": "白天实时榜账号池",
+        "label": "实时榜素材ff池-白天",
         "description": "白天实时榜线专用池，按 12:00-18:00 手动窗口运行。",
     },
     "facebook_drama_realtime_single_pool": {
-        "label": "实时榜定账号池",
+        "label": "实时榜单素材单账号池-夜间",
         "description": "夜间定账号实时榜线，单素材绑定单账号连续消耗。",
     },
     "facebook_drama_creative_list_pool": {
-        "label": "创意列表映射账号池",
+        "label": "创意列表匹官剧ff池-夜间",
         "description": "夜间创意列表外部素材映射线专用池。",
     },
     "facebook_drama_creative_list_day_pool": {
-        "label": "白天创意列表映射账号池",
+        "label": "创意列表匹官剧ff池-白天",
         "description": "白天创意列表外部素材映射线专用池，按 12:00-18:00 手动窗口运行。",
     },
     "facebook_drama_ordinary_pool": {
-        "label": "普通池账号池",
+        "label": "ai-cut官剧池-夜间",
         "description": "普通池线专用池，主要承接官方短剧稳定补量。",
     },
     "facebook_drama_fbhot_test_pool": {
-        "label": "热测线账号池",
+        "label": "FB热度优先策略池-夜间",
         "description": "FB 热测线实验池，用来测试热度优先策略。",
     },
     "facebook_drama_yourchannel_pool": {
-        "label": "YourChannel 剧场线账号池",
+        "label": "YourChannel 剧场线账号池-白天",
         "description": "YourChannel 剧场线专用池，使用白名单剧名和剧场发布策略。",
     },
     "facebook_drama_recent_order_pool": {
-        "label": "近月出单剧账号池",
+        "label": "近月出单剧池-夜间",
         "description": "夜间近月出单剧线专用池，按表格轮转剧名并使用官方视频 FFmpeg 30 秒快切。",
+    },
+    "facebook_drama_stardusttv_pool": {
+        "label": "山海剧场线账号池-夜间",
+        "description": "山海剧场线专用池，从备用池拆出的 15 个账号按剧名表轮转，使用官方视频 FFmpeg 15-30 秒快切。",
     },
     "facebook_drama_reel_block_pool": {
         "label": "Reel 限制账号池",
@@ -137,6 +143,7 @@ LINE_DISPLAY_NAMES = {
     "fbhot_test": "FB 热度加权线",
     "yourchannel": "YourChannel 剧场线",
     "recent_order": "近月出单剧线",
+    "stardusttv": "夜间 StardustTV 剧场线",
 }
 
 FINAL_SUCCESS_PREFIXES = ("published",)
@@ -266,6 +273,8 @@ def _line_clip_method(line_name: str) -> str:
         return "剧场白名单发布"
     if normalized == "recent_order":
         return "近月出单剧快切"
+    if normalized == "stardusttv":
+        return "StardustTV 官方快切"
     return ""
 
 
@@ -1744,6 +1753,7 @@ class TestPoolDashboardService:
             "yourchannel",
             "realtime",
             "recent_order",
+            "stardusttv",
             "realtime_single",
             "creative_list",
             "ordinary",
@@ -2614,6 +2624,7 @@ class TestPoolDashboardService:
             "yourchannel",
             "realtime",
             "recent_order",
+            "stardusttv",
             "realtime_single",
             "creative_list",
             "ordinary",
