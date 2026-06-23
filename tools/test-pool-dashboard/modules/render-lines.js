@@ -10,6 +10,7 @@ import {
   normalizeIssue,
   qs,
   rangeLabel,
+  rewriteLineNames,
   statusLabel,
   statusTone,
 } from "./utils.js";
@@ -105,7 +106,7 @@ export function renderLineCards(overview, failures) {
         <div class="line-card-head">
           <div>
             <div class="line-title-row">
-              <h3>${esc(row.display_name || lineLabel(row.line_name))}</h3>
+              <h3>${esc(lineLabel(row.line_name) || rewriteLineNames(row.display_name) || "-")}</h3>
               <span class="status-pill ${esc(statusTone(row.is_running ? "processing" : row.runtime_state))}">${esc(statusText)}</span>
             </div>
             <div class="line-meta-pills">

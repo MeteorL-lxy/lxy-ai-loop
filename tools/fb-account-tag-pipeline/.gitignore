@@ -1,0 +1,8 @@
+# 本地密钥（勿提交）
+.env
+runs/
+config/phones.txt
+config/test_*.txt
+
+# 从 ai-loop 同步的运行时代码（由 sync_from_ai_loop 生成，勿手改）
+vendor/

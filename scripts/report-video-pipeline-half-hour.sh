@@ -36,6 +36,11 @@ LOOP_NAME="${LOOP_NAME:-$(read_config loop_name liuxinyu-ai-loop)}"
 PUBLISH_INTERVAL_SECONDS="${PUBLISH_INTERVAL_SECONDS:-$(read_config publish_interval_seconds 120)}"
 DAILY_TARGET="${DAILY_TARGET:-$(read_config daily_target "")}"
 PUBLISH_START_TIME="${PUBLISH_START_TIME:-$(read_config publish_start_time "")}"
+PUBLISHED_TODAY="${PUBLISHED_TODAY:-$(read_config published_today "")}"
+ROUND_NAME="${ROUND_NAME:-$(read_config round_name "")}"
+VERIFY_LIMIT="${VERIFY_LIMIT:-$(read_config verify_limit 100000)}"
+SKIP_INGEST_VERIFY="${SKIP_INGEST_VERIFY:-0}"
+ALLOW_OWNER_MISMATCH="${ALLOW_OWNER_MISMATCH:-0}"
 EXECUTE="${EXECUTE:-0}"
 FILTER_WINDOW="${FILTER_WINDOW:-0}"
 STRICT="${STRICT:-0}"
@@ -161,6 +166,37 @@ PY
 )"
 fi
 
+python3 - "$TASKS_JSON" "$PUBLISH_START_TIME" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+publish_start_time = str(sys.argv[2] or "").strip()
+if not publish_start_time:
+    raise SystemExit(0)
+data = json.loads(path.read_text(encoding="utf-8"))
+rows = data.get("rows") if isinstance(data, dict) else []
+if not isinstance(rows, list):
+    raise SystemExit(0)
+changed = False
+for row in rows:
+    if not isinstance(row, dict):
+        continue
+    status = str(row.get("publish_status") or "").strip().lower()
+    if not str(row.get("publish_schedule_start_time") or "").strip():
+        row["publish_schedule_start_time"] = publish_start_time
+        changed = True
+    if not str(row.get("publish_start_time") or "").strip():
+        row["publish_start_time"] = publish_start_time
+        changed = True
+    if status not in {"failed", "cancelled", "error"} and not str(row.get("short_link_publish_time") or "").strip():
+        row["short_link_publish_time"] = publish_start_time
+        changed = True
+if changed:
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+PY
+
 cmd=(
   python3 "$TRACKER_DIR/scripts/report_half_hour_loop.py"
   --tasks "$TASKS_JSON"
@@ -174,12 +210,32 @@ cmd=(
   --output-dir "$OUT_DIR/half-hour-reports"
 )
 
+if [[ -n "$PUBLISHED_TODAY" ]]; then
+  cmd+=(--published-today "$PUBLISHED_TODAY")
+fi
+
+if [[ -n "$ROUND_NAME" ]]; then
+  cmd+=(--round-name "$ROUND_NAME")
+fi
+
+if [[ -n "$VERIFY_LIMIT" ]]; then
+  cmd+=(--verify-limit "$VERIFY_LIMIT")
+fi
+
 if [[ "$FILTER_WINDOW" == "1" ]]; then
   cmd+=(--filter-window)
 fi
 
 if [[ "$STRICT" == "1" ]]; then
   cmd+=(--strict)
+fi
+
+if [[ "$ALLOW_OWNER_MISMATCH" == "1" ]]; then
+  cmd+=(--allow-owner-mismatch)
+fi
+
+if [[ "$SKIP_INGEST_VERIFY" == "1" ]]; then
+  cmd+=(--skip-ingest-verify)
 fi
 
 if [[ "$EXECUTE" == "1" ]]; then

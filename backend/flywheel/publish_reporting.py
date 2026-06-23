@@ -105,6 +105,8 @@ def _ai_cut_info(clip_options: dict) -> dict[str, object]:
 
 
 def _batch_item_publish_outcome(item: dict, records: list[dict], tasks: list[dict]) -> str:
+    if str(item.get("status") or "").strip().lower() == "processing":
+        return "发布处理中"
     statuses_raw = [str(record.get("status") or "").upper() for record in records if str(record.get("status") or "")] or [
         str(task.get("status") or "").upper() for task in tasks if str(task.get("status") or "")
     ]

@@ -187,6 +187,7 @@ def _normalize_rows(
         internal_account_id = _text(account.get("account_id"))
         clip_status = _clip_status(item, detail)
         publish_status = _publish_status(item, detail)
+        planned_publish_time = publish_start_time if publish_status not in {"failed", "cancelled", "error"} else ""
         row = {
             "date": business_date,
             "assignee": owner,
@@ -238,6 +239,7 @@ def _normalize_rows(
             "publish_req_start_time": "",
             "publish_req_end_time": "",
             "publish_schedule_start_time": publish_start_time,
+            "short_link_publish_time": planned_publish_time,
             "publish_interval_sec": publish_interval_seconds or 0,
             "publish_duration_sec": 0,
             "social_post_id": _text(publish.get("post_id") or item.get("post_id")),

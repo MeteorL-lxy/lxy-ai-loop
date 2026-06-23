@@ -1,5 +1,19 @@
 import { LINE_LABELS } from "./state.js";
 
+const LINE_NAME_REWRITES = [
+  ["白天创意列表外部素材映射线", "创意列表匹官剧ff池-白天"],
+  ["夜间实时榜定账号线", "实时榜单素材单账号池-夜间"],
+  ["创意列表外部素材映射线", "创意列表匹官剧ff池-夜间"],
+  ["白天实时榜线", "实时榜素材ff池-白天"],
+  ["YourChannel 剧场线", "YourChannel 剧场线账号池-白天"],
+  ["FB 热度加权线", "FB热度优先策略池-夜间"],
+  ["近月出单剧线", "近月出单剧池-夜间"],
+  ["夜间 StardustTV 剧场线", "山海剧场线账号池-夜间"],
+  ["StardustTV 剧场线", "山海剧场线账号池-夜间"],
+  ["普通池线", "ai-cut官剧池-夜间"],
+  ["实时榜线", "实时榜素材ff池-夜间"],
+];
+
 export function qs(id) {
   return document.getElementById(id);
 }
@@ -55,6 +69,15 @@ export function modeLabel(value) {
 
 export function lineLabel(value) {
   return LINE_LABELS[String(value || "").trim()] || value || "-";
+}
+
+export function rewriteLineNames(value) {
+  let text = String(value ?? "");
+  if (!text) return text;
+  for (const [source, target] of LINE_NAME_REWRITES) {
+    text = text.split(source).join(target);
+  }
+  return text;
 }
 
 export function statusLabel(value) {

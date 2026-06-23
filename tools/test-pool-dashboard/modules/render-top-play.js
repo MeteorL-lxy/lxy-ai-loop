@@ -20,7 +20,7 @@ export function renderTopPlay(overview) {
         <div><span>分享</span><strong>${fmtNum(item.share_count)}</strong></div>
       </div>
       <div class="tag-row">
-        <span class="line-chip">${esc(item.line_label || lineLabel(item.line_name))}</span>
+        <span class="line-chip">${esc(lineLabel(item.line_name) || item.line_label || "-")}</span>
         ${item.clip_method ? `<span class="line-chip">${esc(item.clip_method)}</span>` : ""}
       </div>
       <div class="top-play-copy-title">发布文案</div>

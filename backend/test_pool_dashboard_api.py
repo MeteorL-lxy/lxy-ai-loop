@@ -49,16 +49,16 @@ FIXED_BASELINE_CARD_VALUES = {
 }
 
 LINE_LABELS = {
-    "ordinary": "普通池",
-    "realtime": "实时榜",
-    "fbhot_test": "FB 热度加权",
-    "realtime_day": "白天实时榜",
-    "creative_list": "创意列表映射",
-    "creative_list_day": "白天创意列表映射",
-    "realtime_single": "实时榜定账号",
-    "yourchannel": "YourChannel",
-    "recent_order": "近月出单剧",
-    "stardusttv": "夜间 StardustTV",
+    "ordinary": "ai-cut官剧池-夜间",
+    "realtime": "实时榜素材ff池-夜间",
+    "fbhot_test": "FB热度优先策略池-夜间",
+    "realtime_day": "实时榜素材ff池-白天",
+    "creative_list": "创意列表匹官剧ff池-夜间",
+    "creative_list_day": "创意列表匹官剧ff池-白天",
+    "realtime_single": "实时榜单素材单账号池-夜间",
+    "yourchannel": "YourChannel 剧场线账号池-白天",
+    "recent_order": "近月出单剧池-夜间",
+    "stardusttv": "山海剧场线账号池-夜间",
 }
 
 LINE_POOL_KEYS = {
@@ -77,27 +77,27 @@ LINE_POOL_KEYS = {
 ACCOUNT_GROUP_META = {
     "facebook_drama_realtime_pool": {
         "label": "实时榜素材ff池-夜间",
-        "description": "夜间实时榜线专用池，当前固定 30 个账号，承接实时榜外部素材发布。",
+        "description": "实时榜素材ff夜间专用池，当前固定 30 个账号，承接实时榜外部素材发布。",
     },
     "facebook_drama_realtime_day_pool": {
         "label": "实时榜素材ff池-白天",
-        "description": "白天实时榜线专用池，按 12:00-18:00 手动窗口运行。",
+        "description": "实时榜素材ff白天专用池，按 12:00-18:00 手动窗口运行。",
     },
     "facebook_drama_realtime_single_pool": {
         "label": "实时榜单素材单账号池-夜间",
-        "description": "夜间定账号实时榜线，单素材绑定单账号连续消耗。",
+        "description": "实时榜单素材单账号夜间专用池，单素材绑定单账号连续消耗。",
     },
     "facebook_drama_creative_list_pool": {
         "label": "创意列表匹官剧ff池-夜间",
-        "description": "夜间创意列表外部素材映射线专用池。",
+        "description": "创意列表匹官剧ff夜间专用池。",
     },
     "facebook_drama_creative_list_day_pool": {
         "label": "创意列表匹官剧ff池-白天",
-        "description": "白天创意列表外部素材映射线专用池，按 12:00-18:00 手动窗口运行。",
+        "description": "创意列表匹官剧ff白天专用池，按 12:00-18:00 手动窗口运行。",
     },
     "facebook_drama_ordinary_pool": {
         "label": "ai-cut官剧池-夜间",
-        "description": "普通池线专用池，主要承接官方短剧稳定补量。",
+        "description": "ai-cut官剧夜间专用池，主要承接官方短剧稳定补量。",
     },
     "facebook_drama_fbhot_test_pool": {
         "label": "FB热度优先策略池-夜间",
@@ -105,15 +105,15 @@ ACCOUNT_GROUP_META = {
     },
     "facebook_drama_yourchannel_pool": {
         "label": "YourChannel 剧场线账号池-白天",
-        "description": "YourChannel 剧场线专用池，使用白名单剧名和剧场发布策略。",
+        "description": "YourChannel 剧场线白天专用池，使用白名单剧名和剧场发布策略。",
     },
     "facebook_drama_recent_order_pool": {
         "label": "近月出单剧池-夜间",
-        "description": "夜间近月出单剧线专用池，按表格轮转剧名并使用官方视频 FFmpeg 30 秒快切。",
+        "description": "近月出单剧夜间专用池，按表格轮转剧名并使用官方视频 FFmpeg 30 秒快切。",
     },
     "facebook_drama_stardusttv_pool": {
         "label": "山海剧场线账号池-夜间",
-        "description": "山海剧场线专用池，从备用池拆出的 15 个账号按剧名表轮转，使用官方视频 FFmpeg 15-30 秒快切。",
+        "description": "山海剧场夜间专用池，从备用池拆出的 15 个账号按剧名表轮转，使用官方视频 FFmpeg 15-30 秒快切。",
     },
     "facebook_drama_reel_block_pool": {
         "label": "Reel 限制账号池",
@@ -134,16 +134,16 @@ ACCOUNT_GROUP_META = {
 }
 
 LINE_DISPLAY_NAMES = {
-    "ordinary": "普通池线",
-    "realtime": "实时榜线",
-    "realtime_day": "白天实时榜线",
-    "realtime_single": "夜间实时榜定账号线",
-    "creative_list": "创意列表外部素材映射线",
-    "creative_list_day": "白天创意列表外部素材映射线",
-    "fbhot_test": "FB 热度加权线",
-    "yourchannel": "YourChannel 剧场线",
-    "recent_order": "近月出单剧线",
-    "stardusttv": "夜间 StardustTV 剧场线",
+    "ordinary": "ai-cut官剧池-夜间",
+    "realtime": "实时榜素材ff池-夜间",
+    "realtime_day": "实时榜素材ff池-白天",
+    "realtime_single": "实时榜单素材单账号池-夜间",
+    "creative_list": "创意列表匹官剧ff池-夜间",
+    "creative_list_day": "创意列表匹官剧ff池-白天",
+    "fbhot_test": "FB热度优先策略池-夜间",
+    "yourchannel": "YourChannel 剧场线账号池-白天",
+    "recent_order": "近月出单剧池-夜间",
+    "stardusttv": "山海剧场线账号池-夜间",
 }
 
 FINAL_SUCCESS_PREFIXES = ("published",)
@@ -211,6 +211,11 @@ def _text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _line_display_name(line_name: Any, fallback: Any = "") -> str:
+    key = _text(line_name)
+    return LINE_DISPLAY_NAMES.get(key) or LINE_LABELS.get(key) or _text(fallback)
+
+
 def _clean_publish_copy_text(text: Any) -> str:
     raw = _text(text)
     if not raw:
@@ -261,6 +266,13 @@ def _build_top_play_title(*, raw_title: Any, copy_text: str) -> str:
     if not first_line:
         return title or "未识别剧目"
     return first_line[:36] + ("..." if len(first_line) > 36 else "")
+
+
+def _valid_publish_title(value: Any) -> str:
+    title = _text(value)
+    if not title or _looks_like_stub_title(title):
+        return ""
+    return title
 
 
 def _line_clip_method(line_name: str) -> str:
@@ -1749,15 +1761,15 @@ class TestPoolDashboardService:
     ) -> dict[str, Any]:
         line_order = [
             "realtime_day",
-            "creative_list_day",
             "yourchannel",
             "realtime",
             "recent_order",
             "stardusttv",
             "realtime_single",
-            "creative_list",
             "ordinary",
             "fbhot_test",
+            "creative_list_day",
+            "creative_list",
         ]
         account_groups = self._load_account_groups()
         line_account_counts: dict[str, int] = {}
@@ -2390,13 +2402,12 @@ class TestPoolDashboardService:
             return best
 
         def _sample_drama_title(item: dict[str, Any], matched_task: dict[str, Any]) -> str:
+            title = _valid_publish_title(item.get("title"))
+            if title:
+                return title
             title = _text(matched_task.get("drama_title"))
             if title:
                 return title
-            raw_title = _text(item.get("title"))
-            lowered = raw_title.lower()
-            if raw_title and "http" not in lowered and "click" not in lowered and "watch" not in lowered:
-                return raw_title
             return ""
 
         def _build_history_sample(day_key: str, item: dict[str, Any]) -> dict[str, Any]:
@@ -2415,6 +2426,7 @@ class TestPoolDashboardService:
                 "task_id": task_id,
                 "account_name": _text(item.get("social_name")) or "未知账号",
                 "drama_title": _sample_drama_title(item, matched_task),
+                "title": _valid_publish_title(item.get("title")),
                 "platform": _text(item.get("social_type") or "FACEBOOK") or "FACEBOOK",
                 "line_name": line_name,
                 "line_label": LINE_DISPLAY_NAMES.get(line_name) or "待识别线路",
@@ -2560,10 +2572,10 @@ class TestPoolDashboardService:
         def build_peak_note(item: dict[str, Any], metric_name: str) -> list[str]:
             lines = [
                 f"日期：{_text(item.get('day_key')) or '-'}",
-                f"线路：{_text(item.get('line_label')) or '-'}",
+                f"线路：{_line_display_name(item.get('line_name'), item.get('line_label')) or '-'}",
                 f"账号：{_text(item.get('account_name')) or '-'}",
             ]
-            drama_title = _text(item.get("drama_title"))
+            drama_title = _text(item.get("drama_title") or item.get("title"))
             if drama_title:
                 lines.append(f"剧名：{drama_title}")
             scope = _text(item.get("metric_scope")) or "未匹配到样本任务"
@@ -2620,15 +2632,15 @@ class TestPoolDashboardService:
     def _build_line_cumulative_totals_payload(self, *, start_day: str, end_day: str) -> dict[str, Any]:
         line_order = [
             "realtime_day",
-            "creative_list_day",
             "yourchannel",
             "realtime",
             "recent_order",
             "stardusttv",
             "realtime_single",
-            "creative_list",
             "ordinary",
             "fbhot_test",
+            "creative_list_day",
+            "creative_list",
         ]
         account_groups = self._load_account_groups()
         account_line_map = self._build_account_line_map()

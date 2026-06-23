@@ -1,4 +1,4 @@
-import { esc, fmtDateTime, fmtMoney, fmtNum, qs } from "./utils.js";
+import { esc, fmtDateTime, fmtMoney, fmtNum, lineLabel, qs, rewriteLineNames } from "./utils.js";
 
 export function renderLineCumulative(overview) {
   const payload = overview.line_cumulative || {};
@@ -22,10 +22,13 @@ export function renderLineCumulative(overview) {
     if (clickDelta !== 0) return clickDelta;
     const incomeDelta = Number(b?.income_total || 0) - Number(a?.income_total || 0);
     if (incomeDelta !== 0) return incomeDelta;
-    return String(a?.line_label || "").localeCompare(String(b?.line_label || ""), "zh-CN");
+    return String(lineLabel(a?.line_name) || a?.line_label || "").localeCompare(
+      String(lineLabel(b?.line_name) || b?.line_label || ""),
+      "zh-CN",
+    );
   });
   node.innerHTML = `
-    ${payload.note ? `<div class="history-inline-note">${esc(payload.note)}</div>` : ""}
+    ${payload.note ? `<div class="history-inline-note">${esc(rewriteLineNames(payload.note))}</div>` : ""}
     <div class="table-wrap table-wrap-five-rows line-cumulative-wrap">
       <table class="data-table compact line-cumulative-table">
         <thead>
@@ -41,7 +44,7 @@ export function renderLineCumulative(overview) {
         <tbody>
           ${rows.length ? rows.map((row) => `
             <tr>
-              <td><strong>${esc(row.line_label || "-")}</strong></td>
+              <td><strong>${esc(lineLabel(row.line_name) || rewriteLineNames(row.line_label) || "-")}</strong></td>
               <td>${fmtNum(row.account_count)}</td>
               <td>${fmtNum(row.view_total)}</td>
               <td>${fmtNum(row.click_total)}</td>

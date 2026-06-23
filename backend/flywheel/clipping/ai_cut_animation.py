@@ -67,6 +67,8 @@ DEFAULT_SYNC_MATERIAL_CATEGORY_ID = max(
 ADMIN_RUNNING_STATUSES = {
     "queued",
     "queue",
+    "execute",
+    "executing",
     "running",
     "processing",
     "pending",
@@ -74,6 +76,8 @@ ADMIN_RUNNING_STATUSES = {
     "in_progress",
     "download_running",
     "clip_running",
+    "执行中",
+    "进行中",
 }
 ADMIN_SUCCESS_STATUSES = {
     "success",
@@ -105,6 +109,24 @@ ADMIN_FAILED_STATUSES = {
 
 class AiCutAnimationError(RuntimeError):
     """OpenAPI 调用异常。"""
+
+
+class AiCutTaskStillRunningError(AiCutAnimationError):
+    """ai-cut task did not finish inside the local wait window, but is still non-terminal upstream."""
+
+    def __init__(
+        self,
+        task_id: str,
+        *,
+        last_status: object = "",
+        snapshots: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
+        self.task_id = str(task_id or "").strip()
+        self.last_status = str(last_status or "").strip()
+        self.snapshots = dict(snapshots or {})
+        super().__init__(
+            f"ai-cut 任务仍在执行，等待窗口到期: task_id={self.task_id}, last_status={self.last_status or 'unknown'}"
+        )
 
 
 def shared_env_file() -> Path:
@@ -497,6 +519,48 @@ def raise_if_admin_task_failed(
         )
 
 
+def _admin_task_still_running(snapshots: dict[str, dict[str, Any]]) -> bool:
+    return any(
+        isinstance(record, dict) and _admin_status_category(record) == "running"
+        for record in (snapshots or {}).values()
+    )
+
+
+def _openapi_task_has_failed_child(body: dict[str, Any]) -> bool:
+    serials = body.get("serials")
+    if not isinstance(serials, list):
+        return False
+    for serial in serials:
+        payload = serial if isinstance(serial, dict) else {}
+        download_status = _normalize_admin_status(payload.get("download_status"))
+        if download_status in ADMIN_FAILED_STATUSES:
+            return True
+        clip = payload.get("clip")
+        if isinstance(clip, dict):
+            clip_status = _normalize_admin_status(clip.get("status"))
+            if clip_status in ADMIN_FAILED_STATUSES:
+                return True
+            segments = clip.get("segments")
+            if isinstance(segments, list) and any(
+                _normalize_admin_status((segment or {}).get("status")) in ADMIN_FAILED_STATUSES
+                for segment in segments
+                if isinstance(segment, dict)
+            ):
+                return True
+    return False
+
+
+def _openapi_task_still_running(body: dict[str, Any]) -> bool:
+    status = _normalize_admin_status(body.get("status"))
+    if status in ADMIN_RUNNING_STATUSES:
+        return True
+    if status and status not in FINAL_TASK_STATUSES:
+        return True
+    if _openapi_task_has_failed_child(body):
+        return False
+    return not _clip_results_ready(body)
+
+
 def create_short_drama_clip_task(
     *,
     app_id: str,
@@ -581,7 +645,23 @@ def wait_for_short_drama_clip_task(
     status = str(body.get("status") or "").strip().lower()
     if status in FINAL_TASK_STATUSES and _clip_results_ready(body):
         return body
-    raise_if_admin_task_failed(task_id, request_timeout=request_timeout)
+    snapshots = get_admin_task_snapshots(task_id, timeout=request_timeout)
+    free_video = snapshots.get("free_video")
+    if isinstance(free_video, dict) and _admin_status_category(free_video) == "failed":
+        raise AiCutAnimationError(
+            f"ai-cut 任务已失败: task_id={task_id}, {_admin_record_summary('free_video', free_video)}"
+        )
+    auto_clip = snapshots.get("auto_clip")
+    if isinstance(auto_clip, dict) and _admin_status_category(auto_clip) == "failed":
+        raise AiCutAnimationError(
+            f"ai-cut 任务已失败: task_id={task_id}, {_admin_record_summary('auto_clip', auto_clip)}"
+        )
+    if _admin_task_still_running(snapshots) or _openapi_task_still_running(last_body):
+        raise AiCutTaskStillRunningError(
+            task_id,
+            last_status=last_body.get("status"),
+            snapshots=snapshots,
+        )
     raise AiCutAnimationError(f"ai-cut 任务超时未完成: task_id={task_id}, last_status={last_body.get('status')}")
 
 

@@ -18,32 +18,35 @@ export const state = {
 
 export const LINE_ORDER = [
   "realtime_day",
-  "creative_list_day",
   "yourchannel",
+  "stardusttv",
   "realtime",
   "recent_order",
   "realtime_single",
-  "creative_list",
   "ordinary",
   "fbhot_test",
+  "creative_list_day",
+  "creative_list",
 ];
 
 export const LINE_LABELS = {
-  ordinary: "普通池线",
-  realtime: "实时榜线",
-  realtime_day: "白天实时榜线",
-  realtime_single: "夜间实时榜定账号线",
-  creative_list: "创意列表外部素材映射线",
-  creative_list_day: "白天创意列表外部素材映射线",
-  fbhot_test: "FB 热度加权线",
-  yourchannel: "YourChannel 剧场线",
-  recent_order: "近月出单剧线",
+  ordinary: "ai-cut官剧池-夜间",
+  realtime: "实时榜素材ff池-夜间",
+  realtime_day: "实时榜素材ff池-白天",
+  realtime_single: "实时榜单素材单账号池-夜间",
+  creative_list: "创意列表匹官剧ff池-夜间",
+  creative_list_day: "创意列表匹官剧ff池-白天",
+  fbhot_test: "FB热度优先策略池-夜间",
+  yourchannel: "YourChannel 剧场线账号池-白天",
+  recent_order: "近月出单剧池-夜间",
+  stardusttv: "山海剧场线账号池-夜间",
 };
 
 export const LINE_STRATEGIES = {
   realtime_day: "选素材：白天实时榜外部素材优先，先补当天榜单命中。\n如何剪辑：优先走外部素材快切，压缩成能快速发出的短视频。\n如何发布：白天手动窗口 12:00-18:00 内补量，重点看回收速度。",
   creative_list_day: "选素材：从创意列表外部素材里挑能映射到真实任务的素材，优先承接白天补量。\n如何剪辑：先取外部素材，再按映射任务做快切和时长归一。\n如何发布：白天 12:00-18:00 手动窗口发，先看命中和回收。",
   yourchannel: "选素材：只用白名单剧名，不混入其他实验素材。\n如何剪辑：直接按白名单剧目文案，走固定剧场发布节奏。\n如何发布：优先发 YourChannel 剧场，重点看剧目命中和账号达标率。",
+  stardusttv: "选素材：按山海剧场剧名表轮转，优先用已经验证过能跑的剧目。\n如何剪辑：使用官方视频 FFmpeg 15-30 秒快切，先保稳定出片和首屏节奏。\n如何发布：夜间持续补量，重点看剧场命中、账号达标和播放回收。",
   realtime: "选素材：优先吃夜间实时榜外部素材，先看榜单里能直接跑的热剧。\n如何剪辑：外部素材优先快切，强调首屏节奏和快速出片。\n如何发布：夜间 18:00-次日12:00 连续补量，重点看播放回收和链接点击。",
   recent_order: "选素材：只吃近一个月真实出单剧表格里的剧名和剧场，按表格顺序轮转；全部跑完后再从头开始。\n如何剪辑：官方视频随机抽取可播剧集，再用 FFmpeg 切约 30 秒片段。\n如何发布：夜间补量线，重点看真实出单剧的稳定出量与账号达标率。",
   realtime_single: "选素材：夜间实时榜里挑可连续消耗的素材，固定绑定到单账号。\n如何剪辑：同一素材反复试不同切法，方便观察单账号反馈。\n如何发布：按单账号连续发，适合看定向试跑和极值表现。",

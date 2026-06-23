@@ -1,4 +1,4 @@
-import { esc, fmtDateTime, fmtMoney, fmtNum, fmtPct, fmtTrendValue, lineLabel, qs } from "./utils.js";
+import { esc, fmtDateTime, fmtMoney, fmtNum, fmtPct, fmtTrendValue, lineLabel, qs, rewriteLineNames } from "./utils.js";
 
 export function renderDailyTopHistory(overview) {
   const payload = overview.daily_top_history || {};
@@ -14,8 +14,8 @@ export function renderDailyTopHistory(overview) {
   }
 
   const summaryCards = (payload.summary_cards || []).map((card) => {
-    const lines = Array.isArray(card.note_lines) ? card.note_lines : [];
-    const note = card.note ? `<div class="history-sample-note">${esc(card.note)}</div>` : "";
+    const lines = Array.isArray(card.note_lines) ? card.note_lines.map((line) => rewriteLineNames(line)) : [];
+    const note = card.note ? `<div class="history-sample-note">${esc(rewriteLineNames(card.note))}</div>` : "";
     const metaRows = lines.length
       ? `<div class="history-sample-meta">${lines.map((line) => `<div class="history-sample-meta-row">${esc(line)}</div>`).join("")}</div>`
       : "";
@@ -33,7 +33,7 @@ export function renderDailyTopHistory(overview) {
 
   const rows = payload.rows || [];
   node.innerHTML = `
-    ${payload.note ? `<div class="history-inline-note">${esc(payload.note)}</div>` : ""}
+    ${payload.note ? `<div class="history-inline-note">${esc(rewriteLineNames(payload.note))}</div>` : ""}
     <div class="history-card-grid-sample">
       ${summaryCards}
     </div>
@@ -73,7 +73,7 @@ export function renderDailyTopHistory(overview) {
                 <div class="table-sub">${fmtNum(row.like_count)} / ${fmtNum(row.comment_count)} / ${fmtNum(row.share_count)}</div>
               </td>
               <td>
-                <div>${esc(row.line_label || lineLabel(row.line_name))}</div>
+                <div>${esc(lineLabel(row.line_name) || rewriteLineNames(row.line_label) || "-")}</div>
                 <div class="table-sub">${esc(row.account_name || "-")}</div>
               </td>
               <td>
@@ -131,8 +131,8 @@ export function renderHistory(overview) {
           <strong>分析日报口径</strong>
           <span>固定基线 ${esc(payload.baseline_start || "-")} 至 ${esc(payload.baseline_end || "-")} · 最新统计 ${esc(payload.latest_day || "-")}</span>
         </div>
-        <div class="history-summary-sub">${esc(payload.latest_note || "-")}</div>
-        ${payload.latest_summary ? `<div class="history-summary-tip">${esc(payload.latest_summary)}</div>` : ""}
+        <div class="history-summary-sub">${esc(rewriteLineNames(payload.latest_note || "-"))}</div>
+        ${payload.latest_summary ? `<div class="history-summary-tip">${esc(rewriteLineNames(payload.latest_summary))}</div>` : ""}
       </div>
 
       <section class="history-section">

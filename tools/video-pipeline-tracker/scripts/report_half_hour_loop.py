@@ -77,13 +77,19 @@ def run_push(args: argparse.Namespace, tasks_path: Path, window_start: datetime,
         ("--ab-group", args.ab_group),
         ("--strategy-context", args.strategy_context),
         ("--daily-target", args.daily_target),
+        ("--published-today", args.published_today),
         ("--publish-start-time", args.publish_start_time),
         ("--publish-interval-seconds", args.publish_interval_seconds),
         ("--api-key", args.api_key),
+        ("--verify-limit", args.verify_limit),
     ]
     for flag, value in optional_pairs:
         if value not in ("", None):
             cmd.extend([flag, str(value)])
+    if args.allow_owner_mismatch:
+        cmd.append("--allow-owner-mismatch")
+    if args.skip_ingest_verify:
+        cmd.append("--skip-ingest-verify")
     if args.execute:
         cmd.append("--execute")
     proc = subprocess.run(cmd, check=False, text=True, capture_output=True)
@@ -107,6 +113,7 @@ def main() -> int:
     parser.add_argument("--ab-group", default="")
     parser.add_argument("--strategy-context", default="")
     parser.add_argument("--daily-target", type=int, default=None)
+    parser.add_argument("--published-today", type=int, default=None)
     parser.add_argument("--publish-start-time", default="")
     parser.add_argument("--publish-interval-seconds", type=int, default=None)
     parser.add_argument("--window-mode", choices=["previous", "current"], default="previous")
@@ -115,6 +122,9 @@ def main() -> int:
     parser.add_argument("--filter-window", action="store_true", help="Only report rows whose time is inside the half-hour window")
     parser.add_argument("--strict", action="store_true", help="Treat validation warnings as failures")
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--allow-owner-mismatch", action="store_true", help="Allow task rows whose assignee/uid/loop_name differ from CLI values. Not recommended.")
+    parser.add_argument("--skip-ingest-verify", action="store_true", help="Skip post-execute verification against video_pipeline_tasks")
+    parser.add_argument("--verify-limit", type=int, default=100000, help="Rows to fetch from video_pipeline_tasks when verifying execute writes")
     parser.add_argument("--output-dir", default="", help="Write selected rows and report JSON here")
     args = parser.parse_args()
 

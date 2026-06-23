@@ -14,6 +14,7 @@ import sys
 import time
 
 from flywheel.clipping.ai_cut_animation import (
+    AiCutTaskStillRunningError,
     choose_success_segment,
     create_short_drama_clip_task,
     DEFAULT_AUTO_CLIP_ENABLED,
@@ -2869,15 +2870,48 @@ def _clip_batch_item(item: dict, args: argparse.Namespace, config) -> dict:
     ).strip()
     if not app_id or not third_serial_id:
         raise RuntimeError("ai-cut 剪辑缺少 app_id 或 third_serial_id")
-    task_create, task_id, task_body, serial_payload, chosen_segment, submit_attempt = (
-        _submit_ai_cut_task_until_segment_ready(
-            app_id=app_id,
-            third_serial_id=third_serial_id,
-            episode_order=episode_order,
-            clip_options=clip_options,
-            args=args,
+    try:
+        task_create, task_id, task_body, serial_payload, chosen_segment, submit_attempt = (
+            _submit_ai_cut_task_until_segment_ready(
+                app_id=app_id,
+                third_serial_id=third_serial_id,
+                episode_order=episode_order,
+                clip_options=clip_options,
+                args=args,
+            )
         )
-    )
+    except AiCutTaskStillRunningError as exc:
+        return {
+            **item,
+            "status": "processing",
+            "error": str(exc),
+            "publish_final_outcome_override": "发布处理中",
+            "publish_final_reason_override": str(exc),
+            "clip": {
+                "task": {
+                    "key": "ai_cut_animation",
+                    "params": {
+                        "app_id": app_id,
+                        "third_serial_ids": [third_serial_id],
+                        "preferred_episode_order": episode_order,
+                        "source": str(clip_options.get("source") or DEFAULT_AI_ANIMATION_SOURCE),
+                    },
+                },
+                "submit": {
+                    "provider": "ai_cut_animation",
+                    "task_id": exc.task_id,
+                    "manus_id": exc.task_id,
+                    "response": {
+                        "last_status": exc.last_status,
+                        "admin_snapshots": exc.snapshots,
+                    },
+                },
+                "manus_id": exc.task_id,
+                "manus_status": exc.last_status or "running",
+                "execution_provider": "ai_cut_animation",
+                "ai_animation_task_id": exc.task_id,
+            },
+        }
     if not serial_payload:
         raise RuntimeError(f"ai-cut 未返回 serial 结果: {third_serial_id}")
     if not chosen_segment:
@@ -3545,7 +3579,7 @@ def cmd_run_batch_drama(args) -> None:
         timings["剪辑与下载"] = time.perf_counter() - clip_started_at
     finally:
         _stop_stage_heartbeat("剪辑与下载", *clip_heartbeat)
-    publishable_items = [item for item in clipped_items if item.get("status") != "failed" and item.get("clip")]
+    publishable_items = [item for item in clipped_items if item.get("status") == "clipped" and item.get("clip")]
     publish_heartbeat = _start_stage_heartbeat(
         "上传发布与状态确认",
         detail=f"{len(publishable_items)} 条待发布，发布并发 {max(1, int(args.publish_concurrency))}",
@@ -3560,8 +3594,8 @@ def cmd_run_batch_drama(args) -> None:
         timings["上传发布与状态确认"] = time.perf_counter() - publish_started_at
     finally:
         _stop_stage_heartbeat("上传发布与状态确认", *publish_heartbeat)
-    failed_clip_items = [item for item in clipped_items if item.get("status") == "failed"]
-    all_items = [*published_items, *failed_clip_items]
+    pending_clip_items = [item for item in clipped_items if item.get("status") in {"failed", "processing"}]
+    all_items = [*published_items, *pending_clip_items]
     all_items.sort(key=lambda item: int(item.get("index") or 0))
 
     cleanup_heartbeat = _start_stage_heartbeat("本地清理", detail="处理发布成功后的本地成片")

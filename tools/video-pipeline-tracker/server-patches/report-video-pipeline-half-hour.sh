@@ -12,6 +12,7 @@ ROUND_NAME="${ROUND_NAME:-}"
 PUBLISH_INTERVAL_SECONDS="${PUBLISH_INTERVAL_SECONDS:-120}"
 EXECUTE="${EXECUTE:-0}"
 FILTER_WINDOW="${FILTER_WINDOW:-0}"
+PUBLISHED_TODAY="${PUBLISHED_TODAY:-}"
 
 ENV_FILE="$LOOP_ROOT/.env.server"
 DAILY_TARGET="${DAILY_TARGET:-}"
@@ -28,6 +29,25 @@ OUT_DIR="${OUT_DIR:-$LOOP_ROOT/runtime/video-pipeline-tracker/$REPORT_DATE}"
 TASKS_JSON="$OUT_DIR/tasks-$LOOP_NAME-$REPORT_DATE.json"
 
 mkdir -p "$OUT_DIR"
+
+if [[ -z "$PUBLISHED_TODAY" ]]; then
+  PUBLISHED_TODAY="$(python3 - <<PY 2>/dev/null || true
+import json
+import urllib.request
+
+api_base = ${API_BASE@Q}.rstrip("/")
+owner = ${OWNER@Q}
+try:
+    payload = json.load(urllib.request.urlopen(api_base + "/api/dashboard?refresh=1", timeout=60))
+    for row in payload.get("owner_loop_node_metrics") or []:
+        if row.get("owner") == owner:
+            print(int(row.get("published_today_count") or 0))
+            break
+except Exception:
+    pass
+PY
+)"
+fi
 
 python3 "$TOOL_DIR/scripts/import_steven_telemetry.py" \
   --loop-root "$LOOP_ROOT" \
@@ -53,6 +73,10 @@ cmd=(
   --publish-interval-seconds "$PUBLISH_INTERVAL_SECONDS"
   --output-dir "$OUT_DIR/half-hour-reports"
 )
+
+if [[ -n "$PUBLISHED_TODAY" ]]; then
+  cmd+=(--published-today "$PUBLISHED_TODAY")
+fi
 
 if [[ -n "$ROUND_NAME" ]]; then
   cmd+=(--round-name "$ROUND_NAME")

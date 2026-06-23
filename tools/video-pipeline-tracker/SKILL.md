@@ -1,7 +1,6 @@
 ---
 name: video-pipeline-tracker
 description: "短视频生产全链路数据追踪与策略接入工具。当用户需要从 AI Loop 看板读取剪辑/发布/选号/选剧策略，给各自 loop 绑定策略，或抓取、解析、入库基础信息、选剧视频信息、剪辑信息、上传信息、发布信息、错误重试信息时使用。支持 API JSON、daily-loop telemetry、Markdown 报告解析，通过 HTTP API 写入看板数据库，并生成策略绑定、运行日志和统计摘要。触发词：短视频数据、生产链路、策略拉取、策略绑定、loop 策略、剪辑数据入库、发布追踪、video pipeline、短剧发布、批量发布报告。"
-agent_created: true
 ---
 
 # 短视频生产全链路数据追踪
@@ -21,6 +20,8 @@ agent_created: true
 ## 新 Loop 接入优先路径
 
 当用户要把本 skill 分享给其他人，或让其他 loop 适配 Dashboard 统计时，优先读取 [references/integration_contract.md](references/integration_contract.md)，按接入契约执行。
+
+如果要把适配要求发给其他 loop 维护者，直接使用 [references/loop_adaptation_prompt.md](references/loop_adaptation_prompt.md)。它强调：只写 `ai_loop_runtime_events` 不算完成接入，必须写入 `video_pipeline_tasks` 并通过写入后自检。
 
 分享包内置最小样例：
 
@@ -55,15 +56,17 @@ python3 scripts/validate_loop_payload.py \
 python3 scripts/report_half_hour_loop.py \
   --tasks runtime/tasks.json \
   --owner <owner> \
+  --uid <owner-uid> \
   --loop-name <their-loop-name> \
   --daily-target <today-target> \
   --publish-start-time "YYYY-MM-DD HH:MM:SS" \
   --publish-interval-seconds 120 \
   --output-dir runtime/half-hour-reports \
+  --strict \
   --execute
 ```
 
-`runtime/tasks.json` 建议保存当天全量任务快照；半小时上报重复写稳定 `task_id` 时会更新同一条任务，不会重复计数。
+`runtime/tasks.json` 建议保存当天全量任务快照；半小时上报重复写稳定 `task_id` 时会更新同一条任务，不会重复计数。`--execute` 后脚本默认回查 `video_pipeline_tasks`，确认当前 `--owner/--uid` 的任务明细真实入库；如果只写入运行事件但任务明细未命中，会返回 `ok=false`。
 
 ## 核心流程
 
@@ -220,6 +223,14 @@ python3 scripts/push_loop_result.py \
 ```
 
 首次接入新 loop 时，先不加 `--execute` 做 dry-run，确认 `sample_task` 里的 `clip_params.strategy_context` 正确后再写入。
+
+dry-run 还必须确认 `dashboard_gate.ok=true`。它会阻断以下常见误接入：
+
+- `assignee` 与命令行 `--owner` 不一致。
+- `uid` 与命令行 `--uid` 不一致。
+- `loop_name` 与命令行 `--loop-name` 不一致。
+- 任务缺少 `task_id/date/drama_name/publish_status/账号 key` 等 Dashboard 聚合必需字段。
+- 只有 `ai_loop_runtime_events`，但没有可归属到负责人的 `video_pipeline_tasks` 任务明细。
 
 ### 4. 接入前校验
 

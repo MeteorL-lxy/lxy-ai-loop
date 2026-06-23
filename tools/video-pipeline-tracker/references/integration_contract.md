@@ -31,7 +31,8 @@ python3 scripts/push_loop_result.py \
   -o runtime/normalized-result.json
 ```
 
-4. dry-run 无 error 后追加 `--execute` 写入 Dashboard API。
+4. dry-run 无 error 且 `dashboard_gate.ok=true` 后追加 `--execute` 写入 Dashboard API。
+5. `--execute` 后必须查看 `ingest_verification.ok`。如果它是 `false`，说明可能只写了运行事件，或 `video_pipeline_tasks` 没有命中当前 `owner/uid`，Dashboard 仍会显示无 pipeline 任务明细。
 
 ## 半小时上报要求
 
@@ -50,12 +51,15 @@ python3 scripts/report_half_hour_loop.py \
   --publish-start-time "2026-06-22 19:00:00" \
   --publish-interval-seconds 120 \
   --output-dir runtime/half-hour-reports \
+  --strict \
   --execute
 ```
 
 默认 `--window-mode previous`，即在整点或半点运行时，上报刚结束的 30 分钟窗口，同时生成一条 `ai_loop_runtime_events.event_type=loop_window_report` 事件。
 
 如果 `runtime/tasks.json` 保存的是当天全量任务快照，默认不要加 `--filter-window`，这样每半小时上报的是“当前全量进度快照”，最适合 Dashboard 展示“今天目标还差多少”。如果只想上报窗口内发生变化的任务，再加 `--filter-window`。
+
+`report_half_hour_loop.py --execute` 默认会透传到 `push_loop_result.py` 并回查 `video_pipeline_tasks`。不要用 `--skip-ingest-verify` 作为正式接入命令；它只适合 API 临时不可读时排障。
 
 crontab 示例：
 
@@ -125,8 +129,11 @@ python3 scripts/push_loop_result.py --tasks runtime/tasks.json --owner 负责人
 
 - `validate_loop_payload.py` 无 errors；正式接入建议 strict 模式无 warnings。
 - `summarize_pipeline_metrics.py` 能输出 Loop 节点指标，且选剧、账号、剪辑、发布、发布时间数字符合本轮业务预期。
+- `push_loop_result.py` dry-run 中 `dashboard_gate.ok=true`，`sample_task.assignee` 精确等于负责人姓名，`sample_task.uid` 精确等于负责人 UID。
 - `push_loop_result.py` dry-run 中 `sample_event.metric_json` 包含 `round_selected_drama_count`、`round_target_account_count`、`clip_done_count`、`clip_queued_count`、`clipping_count`、`daily_publish_target`、`unpublished_target_gap_count`。
 - `report_half_hour_loop.py` dry-run 能输出 `event_type=loop_window_report`，并在 `runtime/half-hour-reports` 生成 selected tasks 和 report JSON。
+- `report_half_hour_loop.py --execute` 后 `push_result.ingest_verification.ok=true`。
+- `/api/dashboard` 的 `owner_loop_node_metrics` 中出现当前负责人，才算 Dashboard 生产链路接入完成。
 
 ## 常见误用
 
@@ -135,3 +142,5 @@ python3 scripts/push_loop_result.py --tasks runtime/tasks.json --owner 负责人
 - 不要把失败任务的未来 `short_link_publish_time` 计入有效预发布。
 - 不要只把 `loop_name` 写进 `clip_params`；正式接入应写顶层 `loop_name`。
 - 不要用不稳定的随机 ID 做 `task_id`；同一任务重复回写必须更新同一条记录。
+- 不要只写 `ai_loop_runtime_events`；运行事件只能证明脚本被调用，不能让成员弹窗展示本轮选剧、AI工具、剪辑状态、发布时间和发布状态。
+- 不要让任务行里的 `assignee`、`uid`、`loop_name` 与命令行参数不一致；否则数据会写入但归不到正确负责人。

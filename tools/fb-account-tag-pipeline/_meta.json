@@ -1,0 +1,6 @@
+{
+  "name": "fb-account-tag-pipeline",
+  "display_name": "FB 账号打标流水线（独立包）",
+  "short_description": "独立技能包：批量打标、vendor 同步、合并替换主表",
+  "default_prompt": "Use standalone fb-account-tag-pipeline at d:/桌面文件/fb-account-tag-pipeline: run sync if needed, then run_batch.py and report summary.json."
+}

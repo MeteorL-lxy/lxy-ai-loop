@@ -182,7 +182,7 @@ def row_round_name(row: dict[str, Any]) -> str:
 
 
 def account_key(row: dict[str, Any]) -> str:
-    for field in ("social_account_id", "douyin_t8_account", "channel_id", "uid", "task_id"):
+    for field in ("channel_id", "social_account_id", "douyin_t8_account", "uid", "task_id"):
         value = text(row.get(field))
         if value:
             return value
