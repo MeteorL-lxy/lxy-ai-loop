@@ -81,7 +81,7 @@ ACCOUNT_GROUP_META = {
     },
     "facebook_drama_realtime_day_pool": {
         "label": "实时榜素材ff池-白天",
-        "description": "实时榜素材ff白天专用池，按 12:00-18:00 手动窗口运行。",
+        "description": "实时榜素材ff白天专用池，按 10:00-18:00 手动窗口运行。",
     },
     "facebook_drama_realtime_single_pool": {
         "label": "实时榜单素材单账号池-夜间",
@@ -93,7 +93,7 @@ ACCOUNT_GROUP_META = {
     },
     "facebook_drama_creative_list_day_pool": {
         "label": "创意列表匹官剧ff池-白天",
-        "description": "创意列表匹官剧ff白天专用池，按 12:00-18:00 手动窗口运行。",
+        "description": "创意列表匹官剧ff白天专用池，按 10:00-18:00 手动窗口运行。",
     },
     "facebook_drama_ordinary_pool": {
         "label": "ai-cut官剧池-夜间",
@@ -2163,7 +2163,7 @@ class TestPoolDashboardService:
             "today_key": today_key,
             "window_summary": {
                 "night_range": "18:00-次日12:00",
-                "day_range": "12:00-18:00",
+                "day_range": "10:00-18:00",
             },
             "line_targets": line_targets,
         }

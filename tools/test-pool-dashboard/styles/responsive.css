@@ -13,6 +13,23 @@
     width: calc(100vw - 20px);
   }
 
+  .workspace-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .nav-panel {
+    position: static;
+  }
+
+  .page-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .page-nav-btn {
+    width: auto;
+  }
+
   .top-bar {
     grid-template-columns: 1fr;
   }

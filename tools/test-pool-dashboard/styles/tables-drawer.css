@@ -152,8 +152,15 @@
   width: 360px;
 }
 
+.rounds-table th:nth-child(7),
 .rounds-table td:nth-child(7) {
   width: 72px;
+}
+
+.rounds-table .detail-action-cell {
+  padding-left: 8px;
+  padding-right: 8px;
+  text-align: center;
 }
 
 .rounds-table .note-cell,
@@ -191,9 +198,9 @@
 }
 
 .rounds-table .ghost-btn {
-  min-width: 52px;
-  padding: 6px 10px;
-  border-radius: 10px;
+  min-width: 42px;
+  padding: 4px 8px;
+  border-radius: 8px;
   font-size: 12px;
 }
 

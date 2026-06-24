@@ -113,7 +113,7 @@ export function isDayLine(lineName) {
 }
 
 export function rangeLabel(lineName) {
-  return isDayLine(lineName) ? "12:00-18:00" : "18:00-次日12:00";
+  return isDayLine(lineName) ? "10:00-18:00" : "18:00-次日12:00";
 }
 
 export function metricCard(item) {

@@ -9,6 +9,7 @@ import { renderAccountGroups } from "./modules/render-account-groups.js";
 import { renderOptions } from "./modules/render-options.js";
 import { closeDrawer, loadRounds } from "./modules/rounds.js";
 import { ensureLayoutLoaded } from "./modules/layout.js";
+import { initNavigation } from "./modules/navigation.js";
 
 async function loadTopPlay({ force = false } = {}) {
   if (state.topPlayRefreshing) return;
@@ -126,9 +127,15 @@ async function refreshAll({
 }
 
 function bindEvents() {
+  initNavigation((page) => {
+    if (page === "rounds" && !state.roundsLoaded) {
+      loadRounds().catch(showError);
+    }
+  });
+
   qs("refresh-btn").addEventListener("click", () => {
     refreshAll({
-      forceRounds: qs("rounds-panel").open,
+      forceRounds: state.currentPage === "rounds" || state.roundsLoaded,
       refreshTrend: true,
       refreshLineCumulative: true,
       forceTopPlay: true,
@@ -160,12 +167,6 @@ function bindEvents() {
   qs("next-page-btn").addEventListener("click", () => {
     state.page += 1;
     loadRounds().catch(showError);
-  });
-
-  qs("rounds-panel").addEventListener("toggle", (event) => {
-    if (event.currentTarget.open && !state.roundsLoaded) {
-      loadRounds().catch(showError);
-    }
   });
 
   qs("drawer-close").addEventListener("click", closeDrawer);

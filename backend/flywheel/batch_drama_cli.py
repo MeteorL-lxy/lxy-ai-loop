@@ -61,6 +61,33 @@ def _emit_status_line(event: str, payload: dict[str, object]) -> None:
     print(line, file=sys.stderr, flush=True)
 
 
+def _env_truthy(name: str, default: str = "0") -> bool:
+    return str(os.getenv(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _write_progress_snapshot(payload: dict, *, stage: str, report_builder=None) -> None:
+    path_text = str(os.getenv("BARRY_LOOP_PROGRESS_PATH") or "").strip()
+    if not path_text:
+        return
+    try:
+        snapshot = dict(payload)
+        snapshot["status"] = str(snapshot.get("status") or "processing")
+        snapshot["progress_stage"] = str(stage or "").strip()
+        snapshot["progress_written_at"] = time.strftime("%F %T")
+        if report_builder is not None and not isinstance(snapshot.get("report_zh"), dict):
+            snapshot["report_zh"] = report_builder(snapshot)
+        path = Path(path_text).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = path.with_suffix(f"{path.suffix}.tmp")
+        temp_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temp_path.replace(path)
+    except Exception as exc:
+        _emit_status_line(
+            "progress_snapshot_error",
+            {"stage": stage, "error": str(exc)},
+        )
+
+
 def _count_skip_reasons(items: list[dict[str, object]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for item in items:
@@ -3199,6 +3226,19 @@ def _publish_batch_with_retries(
             wait_seconds=args.collect_wait_seconds,
             poll_interval=args.collect_poll_interval,
         ) if all_tasks else []
+        _write_progress_snapshot(
+            {
+                "status": "publishing",
+                "mode": "batch_drama",
+                "platform": platform,
+                "requested_count": int(getattr(args, "count", 0) or len(state_by_index)),
+                "items": [item for _, item in sorted(state_by_index.items())],
+                "publish_records": latest_records,
+                "publish_attempt": attempt,
+            },
+            stage=f"publish_attempt_{attempt}",
+            report_builder=_batch_report_zh,
+        )
         if attempt >= max_attempts:
             break
         records_by_key = _record_by_task_key(latest_records)
@@ -3561,6 +3601,7 @@ def cmd_run_batch_drama(args) -> None:
         }
         payload["report_zh"] = _batch_report_zh(payload)
         payload["user_summary_zh"] = _batch_user_summary_zh(payload["report_zh"])
+        _write_progress_snapshot(payload, stage="dry_run", report_builder=_batch_report_zh)
         payload = _finalize_payload(payload)
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return
@@ -3580,6 +3621,25 @@ def cmd_run_batch_drama(args) -> None:
     finally:
         _stop_stage_heartbeat("剪辑与下载", *clip_heartbeat)
     publishable_items = [item for item in clipped_items if item.get("status") == "clipped" and item.get("clip")]
+    _write_progress_snapshot(
+        {
+            "status": "clipped",
+            "mode": "batch_drama",
+            "platform": plan["platform"],
+            "requested_count": args.count,
+            "items": clipped_items,
+            "publish_records": [],
+            "drama_platform_plan": plan.get("drama_platform_plan", []),
+            "episode_precheck": plan.get("episode_precheck", {}),
+            "safety_gate": safety_gate,
+            "strategy_memory": plan.get("strategy_memory", {}),
+            "selection_summary": plan.get("selection_summary", {}),
+            "timings": timings,
+            "timing_zh": _format_timing_zh(timings),
+        },
+        stage="after_clip",
+        report_builder=_batch_report_zh,
+    )
     publish_heartbeat = _start_stage_heartbeat(
         "上传发布与状态确认",
         detail=f"{len(publishable_items)} 条待发布，发布并发 {max(1, int(args.publish_concurrency))}",
@@ -3597,12 +3657,32 @@ def cmd_run_batch_drama(args) -> None:
     pending_clip_items = [item for item in clipped_items if item.get("status") in {"failed", "processing"}]
     all_items = [*published_items, *pending_clip_items]
     all_items.sort(key=lambda item: int(item.get("index") or 0))
+    _write_progress_snapshot(
+        {
+            "status": "published_waiting_settle",
+            "mode": "batch_drama",
+            "platform": plan["platform"],
+            "requested_count": args.count,
+            "items": all_items,
+            "publish_records": records,
+            "drama_platform_plan": plan.get("drama_platform_plan", []),
+            "episode_precheck": plan.get("episode_precheck", {}),
+            "safety_gate": safety_gate,
+            "strategy_memory": plan.get("strategy_memory", {}),
+            "selection_summary": plan.get("selection_summary", {}),
+            "timings": timings,
+            "timing_zh": _format_timing_zh(timings),
+        },
+        stage="after_publish",
+        report_builder=_batch_report_zh,
+    )
 
-    cleanup_heartbeat = _start_stage_heartbeat("本地清理", detail="处理发布成功后的本地成片")
+    cleanup_heartbeat = _start_stage_heartbeat("本地清理", detail="处理本轮本地临时视频")
     try:
         cleanup_started_at = time.perf_counter()
         cleanup = {"deleted_paths": [], "errors": []}
-        if not args.keep_output and records:
+        if not args.keep_output:
+            keep_failed_publish_clips = _env_truthy("BARRY_LOOP_KEEP_FAILED_PUBLISH_CLIPS", "1")
             successful_keys = {
                 (str(record.get("team_id") or ""), str(record.get("task_id") or ""))
                 for record in records
@@ -3610,12 +3690,21 @@ def cmd_run_batch_drama(args) -> None:
             }
             cleanup_paths: list[str] = []
             for item in all_items:
+                clip = item.get("clip") or {}
+                downloaded_file = str(clip.get("downloaded_file") or "")
+                publish_ready_file = str(clip.get("publish_ready_file") or "")
+                if downloaded_file:
+                    cleanup_paths.append(downloaded_file)
                 tasks = ((item.get("publish") or {}).get("tasks")) or []
                 if not tasks:
+                    if publish_ready_file and not keep_failed_publish_clips:
+                        cleanup_paths.append(publish_ready_file)
                     continue
                 if all((str(task.get("team_id") or ""), str(task.get("task_id") or "")) in successful_keys for task in tasks):
-                    clip = item.get("clip") or {}
-                    cleanup_paths.extend([str(clip.get("downloaded_file") or ""), str(clip.get("publish_ready_file") or "")])
+                    if publish_ready_file:
+                        cleanup_paths.append(publish_ready_file)
+                elif publish_ready_file and not keep_failed_publish_clips:
+                    cleanup_paths.append(publish_ready_file)
             cleanup = _cleanup_generated_files(cleanup_paths)
         timings["本地清理"] = time.perf_counter() - cleanup_started_at
     finally:
@@ -3647,6 +3736,7 @@ def cmd_run_batch_drama(args) -> None:
         "timings": timings,
         "timing_zh": _format_timing_zh(timings),
     }
+    _write_progress_snapshot(payload, stage="before_settle", report_builder=_batch_report_zh)
     payload = _settle_publish_report_payload(
         payload,
         platform=str(plan["platform"]),

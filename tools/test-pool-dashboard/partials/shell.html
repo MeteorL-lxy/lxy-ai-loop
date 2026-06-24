@@ -1,0 +1,84 @@
+<div class="app-shell">
+  <header class="top-bar">
+    <div class="brand-block">
+      <div class="brand-title">AI Loop</div>
+      <span class="brand-badge">个人数据看板</span>
+    </div>
+    <div class="top-meta">
+      <span class="meta-pill"><span class="meta-dot"></span><strong id="status-text">已连接</strong></span>
+      <span class="meta-pill">模式 <strong id="mode-text">本地服务</strong></span>
+      <span class="meta-pill">数据库 <strong id="db-path">-</strong></span>
+      <span class="meta-pill">最后更新 <strong id="last-updated">-</strong></span>
+    </div>
+    <div class="top-actions">
+      <button id="refresh-btn" class="primary-btn">刷新</button>
+    </div>
+  </header>
+
+  <div class="workspace-shell">
+    <aside class="nav-panel">
+      <div class="nav-panel-title">功能导航</div>
+      <nav class="page-nav" id="page-nav">
+        <button class="page-nav-btn active" data-page="home">首页总览</button>
+        <button class="page-nav-btn" data-page="lines">线路中心</button>
+        <button class="page-nav-btn" data-page="content">内容效果</button>
+        <button class="page-nav-btn" data-page="trend">历史趋势</button>
+        <button class="page-nav-btn" data-page="pools">账号池</button>
+        <button class="page-nav-btn" data-page="rounds">轮次归档</button>
+      </nav>
+    </aside>
+
+    <main class="page-stack" id="page-stack">
+      <section class="dashboard-page active" data-page="home">
+        <div id="page-home-slot"></div>
+      </section>
+      <section class="dashboard-page" data-page="lines">
+        <div id="page-lines-slot"></div>
+      </section>
+      <section class="dashboard-page" data-page="content">
+        <div id="page-content-slot"></div>
+      </section>
+      <section class="dashboard-page" data-page="trend">
+        <div id="page-trend-slot"></div>
+      </section>
+      <section class="dashboard-page" data-page="pools">
+        <div id="page-pools-slot"></div>
+      </section>
+      <section class="dashboard-page" data-page="rounds">
+        <div id="page-rounds-slot"></div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<aside class="drawer" id="detail-drawer" aria-hidden="true">
+  <div class="drawer-mask" id="drawer-mask"></div>
+  <div class="drawer-panel">
+    <div class="drawer-head">
+      <div>
+        <h3 id="drawer-title">轮次详情</h3>
+        <p id="drawer-subtitle">-</p>
+      </div>
+      <button id="drawer-close" class="ghost-btn">关闭</button>
+    </div>
+    <div class="drawer-body">
+      <div id="detail-summary" class="detail-grid"></div>
+      <div class="table-wrap">
+        <table class="data-table compact">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>账号</th>
+              <th>剧目</th>
+              <th>来源</th>
+              <th>剪辑</th>
+              <th>状态</th>
+              <th>失败原因</th>
+            </tr>
+          </thead>
+          <tbody id="detail-items"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</aside>

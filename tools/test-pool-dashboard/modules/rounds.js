@@ -51,7 +51,7 @@ export function renderRounds(payload) {
             ${row.unsubmitted_summary && row.unsubmitted_summary !== "-" ? `<div class="table-sub">${esc(row.unsubmitted_summary)}</div>` : ""}
           </div>
         </td>
-        <td><button class="ghost-btn detail-btn" data-archive="${esc(row.archive_key)}">查看</button></td>
+        <td class="detail-action-cell"><button class="ghost-btn detail-btn" data-archive="${esc(row.archive_key)}">查看</button></td>
       </tr>
     `).join("")
     : '<tr><td colspan="7">没有匹配到轮次</td></tr>';

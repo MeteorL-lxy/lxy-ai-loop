@@ -22,6 +22,11 @@ export BARRY_LOOP_STATE_ROOT="${BARRY_LOOP_STATE_ROOT:-$ROOT_DIR/runtime/continu
 export BARRY_LOOP_REPORT_DIR="${BARRY_LOOP_REPORT_DIR:-$ROOT_DIR/runtime/reports/continuous-test-summary}"
 export BARRY_FEISHU_DAILY_LOOP_REPORT_PUSH="${BARRY_FEISHU_DAILY_LOOP_REPORT_PUSH:-0}"
 export BARRY_FEISHU_DAILY_LOOP_ROUND_NOTICE_PUSH="${BARRY_FEISHU_DAILY_LOOP_ROUND_NOTICE_PUSH:-0}"
+export BARRY_LOOP_TIME_WINDOW_ENABLED="${BARRY_LOOP_TIME_WINDOW_ENABLED:-1}"
+export BARRY_LOOP_DAY_WINDOW="${BARRY_LOOP_DAY_WINDOW:-10:00-18:00}"
+export BARRY_LOOP_NIGHT_WINDOW="${BARRY_LOOP_NIGHT_WINDOW:-18:00-12:00}"
+export BARRY_LOOP_SUPERVISOR_POLL_SECONDS="${BARRY_LOOP_SUPERVISOR_POLL_SECONDS:-5}"
+export BARRY_LOOP_SUPERVISOR_SPAWN_STAGGER_SECONDS="${BARRY_LOOP_SUPERVISOR_SPAWN_STAGGER_SECONDS:-5}"
 export BARRY_LOOP_REALTIME_ENABLED="${BARRY_LOOP_REALTIME_ENABLED:-1}"
 export BARRY_LOOP_REALTIME_ACCOUNT_POOL="${BARRY_LOOP_REALTIME_ACCOUNT_POOL:-facebook_drama_realtime_pool}"
 export BARRY_LOOP_REALTIME_COUNT="${BARRY_LOOP_REALTIME_COUNT:-0}"
@@ -77,11 +82,13 @@ export BARRY_LOOP_REALTIME_FB_HEAT_SIGNAL_FILE="${BARRY_LOOP_REALTIME_FB_HEAT_SI
 export BARRY_LOOP_ORDINARY_FB_HEAT_SIGNAL_FILE="${BARRY_LOOP_ORDINARY_FB_HEAT_SIGNAL_FILE:-}"
 export BARRY_LOOP_FBHOT_TEST_FB_HEAT_SIGNAL_FILE="${BARRY_LOOP_FBHOT_TEST_FB_HEAT_SIGNAL_FILE:-}"
 export BARRY_LOOP_RESET_TARGETS_ON_START="${BARRY_LOOP_RESET_TARGETS_ON_START:-0}"
+export BARRY_LOOP_FORCE_RESET_TARGETS_ON_START="${BARRY_LOOP_FORCE_RESET_TARGETS_ON_START:-0}"
 
 if [[ "$BARRY_LOOP_RESET_TARGETS_ON_START" == "1" ]]; then
   python3 - <<'PY'
 from datetime import datetime
 from pathlib import Path
+import os
 import sys
 
 ROOT_DIR = Path.cwd()
@@ -91,9 +98,18 @@ from flywheel.daily_loop_targets import reset_success_target_window
 
 state_root = Path((ROOT_DIR / "runtime" / "continuous-loop")).resolve()
 day = datetime.now().strftime("%Y-%m-%d")
+force_reset = str(os.getenv("BARRY_LOOP_FORCE_RESET_TARGETS_ON_START") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 for line_name in ("realtime", "realtime_single", "realtime_day", "creative_list", "creative_list_day", "ordinary", "fbhot_test", "yourchannel", "recent_order", "stardusttv"):
     run_dir = state_root / day / line_name
+    existing_rounds = list(run_dir.glob("round*.json")) + list(run_dir.glob("round*.progress.json")) + list(run_dir.glob("round*.summary"))
+    if existing_rounds and not force_reset:
+        print(
+            f"[reset-on-start-skip] {line_name}: 今日已有 {len(existing_rounds)} 个轮次/进度文件，"
+            "跳过额度窗口重置；如确需清零需显式设置 BARRY_LOOP_FORCE_RESET_TARGETS_ON_START=1",
+            flush=True,
+        )
+        continue
     payload = reset_success_target_window(run_dir)
     print(
         f"[reset-on-start] {line_name}: generation={int(payload.get('generation') or 0)} "

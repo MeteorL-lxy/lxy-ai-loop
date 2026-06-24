@@ -462,22 +462,75 @@ def _drama_clipped_batch_root() -> Path:
     return Path(__file__).resolve().parents[1] / "data" / "flywheel" / "clipped" / "batch"
 
 
+def _drama_clip_cleanup_grace_hours() -> int:
+    raw = os.getenv("BARRY_DRAMA_CLIP_CLEANUP_GRACE_HOURS", "24")
+    try:
+        return max(1, min(72, int(raw or "24")))
+    except (TypeError, ValueError):
+        return 24
+
+
+def _drama_process_running() -> bool:
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "command"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return False
+    output = str(result.stdout or "")
+    return any(
+        marker in output
+        for marker in (
+            "run-batch-drama",
+            "run-drama-line-worker.py",
+            "run-dual-line-supervisor.py",
+            "run-dual-line-forever.sh",
+        )
+    )
+
+
+def _protected_failed_publish_clip_paths() -> set[str]:
+    try:
+        state = load_state()
+    except Exception:
+        state = {}
+    failed_state = state.get(FAILED_PUBLISH_STATE_KEY) if isinstance(state, dict) else {}
+    if not isinstance(failed_state, dict):
+        return set()
+    items = failed_state.get("items") if isinstance(failed_state.get("items"), list) else []
+    return {
+        str(path).strip()
+        for path in _failed_publish_clip_paths([dict(item) for item in items if isinstance(item, dict)])
+        if str(path).strip()
+    }
+
+
 def _old_drama_clip_paths() -> list[str]:
     root = _drama_clipped_batch_root()
     if not root.exists() or not root.is_dir():
         return []
     today = _today_local_date()
+    process_running = _drama_process_running()
+    cutoff = time.time() - (_drama_clip_cleanup_grace_hours() * 3600)
+    protected_paths = _protected_failed_publish_clip_paths()
     paths: list[str] = []
     for child in root.iterdir():
         if not child.is_file():
             continue
         if child.suffix.lower() != ".mp4":
             continue
+        if str(child) in protected_paths:
+            continue
         try:
             modified_at = datetime.fromtimestamp(child.stat().st_mtime)
         except OSError:
             continue
-        if modified_at.date() >= today:
+        if process_running and modified_at.date() >= today:
+            continue
+        if not process_running and child.stat().st_mtime >= cutoff:
             continue
         paths.append(str(child))
     return sorted(paths)
@@ -4457,33 +4510,17 @@ def cmd_retry_failed_publish(args: argparse.Namespace) -> None:
         platform,
         max_attempts=1,
     )
-    cleanup = {"deleted_paths": [], "errors": []}
-    if not args.keep_output and records:
-        successful_keys = {
-            (str(record.get("team_id") or ""), str(record.get("task_id") or ""))
-            for record in records
-            if str(record.get("status") or "").upper() in SUCCESSFUL_PUBLISH_STATUSES
-        }
-        cleanup_paths: list[str] = []
-        for item in published_items:
-            tasks = ((item.get("publish") or {}).get("tasks")) or []
-            if not tasks:
-                continue
-            if all((str(task.get("team_id") or ""), str(task.get("task_id") or "")) in successful_keys for task in tasks):
-                clip = item.get("clip") or {}
-                cleanup_paths.extend([str(clip.get("downloaded_file") or ""), str(clip.get("publish_ready_file") or "")])
-        cleanup = _cleanup_generated_files(cleanup_paths)
-
     payload = {
         "status": "done",
         "mode": "retry_failed_publish",
         "platform": platform,
         "requested_count": len(items),
         "items": published_items,
-        "publish_records": list(local_payload.get("publish_records") or records),
+        "publish_records": list(records),
         "cleanup": {
             "enabled": not args.keep_output,
-            **cleanup,
+            "deleted_paths": [],
+            "errors": [],
         },
     }
     payload = _settle_publish_report_payload(
@@ -4495,15 +4532,22 @@ def cmd_retry_failed_publish(args: argparse.Namespace) -> None:
         report_builder=_batch_report_zh,
     )
     payload["report_zh"]["执行模式"] = "失败发布重试"
-    payload["user_summary_zh"] = _retry_failed_publish_summary_zh(payload["report_zh"])
-    payload["retry_prompt_zh"] = _failed_publish_prompt_zh(payload["report_zh"])
-    failed_state = _failed_publish_state_payload(
-        mode="retry_failed_publish",
-        platform=platform,
-        items=published_items,
-        records=payload.get("publish_records") if isinstance(payload.get("publish_records"), list) else records,
+    cleanup = (
+        _cleanup_generated_files(_failed_publish_clip_paths(published_items))
+        if not args.keep_output
+        else {"deleted_paths": [], "errors": []}
     )
-    _set_failed_publish_state(failed_state)
+    payload["cleanup"] = {
+        "enabled": not args.keep_output,
+        "policy": "retry_once_then_discard_local_clips",
+        **cleanup,
+    }
+    payload["report_zh"] = _batch_report_zh(payload)
+    payload["report_zh"]["执行模式"] = "失败发布重试"
+    payload["user_summary_zh"] = _retry_failed_publish_summary_zh(payload["report_zh"])
+    payload["retry_prompt_zh"] = ""
+    payload["retry_cleanup_note_zh"] = "失败发布已按规则只重试 1 次；无论成功或失败，本地保留成片已清理，失败原因保留在本次报告中。"
+    _set_failed_publish_state(None)
     payload = _finalize_payload(payload)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 

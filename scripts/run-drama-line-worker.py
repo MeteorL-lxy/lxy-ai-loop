@@ -17,6 +17,7 @@ from flywheel.daily_loop_targets import get_pool_target_status, select_balanced_
 
 
 LINE_GUARD_STATE_FILE = ".line_guard_state.json"
+WINDOW_PAUSED_EXIT_CODE = 75
 VIDEO_ISSUE_FAILURE_PATTERNS = (
     "分辨率错误",
     "分辨率不符合要求",
@@ -46,6 +47,42 @@ def _env_int(name: str, default: int) -> int:
 
 def _log(message: str) -> None:
     print(f"[{datetime.now().strftime('%F %T')}] {message}", flush=True)
+
+
+def _parse_hhmm(value: str) -> int:
+    hour_text, minute_text = str(value or "").strip().split(":", 1)
+    hour = int(hour_text)
+    minute = int(minute_text)
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError(f"invalid HH:MM value: {value}")
+    return hour * 60 + minute
+
+
+def _parse_window(value: str) -> tuple[int, int]:
+    start_text, end_text = str(value or "").strip().split("-", 1)
+    return _parse_hhmm(start_text), _parse_hhmm(end_text)
+
+
+def _current_minute() -> int:
+    now = datetime.now()
+    return now.hour * 60 + now.minute
+
+
+def _window_contains(window: str, minute: int | None = None) -> bool:
+    raw = str(window or "").strip()
+    if not raw:
+        return True
+    try:
+        start, end = _parse_window(raw)
+    except Exception:
+        _log(f"时间窗配置无效：{raw}，按全天可运行处理。")
+        return True
+    current = _current_minute() if minute is None else int(minute)
+    if start == end:
+        return True
+    if start < end:
+        return start <= current < end
+    return current >= start or current < end
 
 
 def _read_log_tail_from_offset(log_path: Path, start_offset: int) -> str:
@@ -181,6 +218,18 @@ def _load_json_dict(path: Path) -> dict:
     except Exception:
         payload = {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _recover_json_from_progress(*, json_path: Path, progress_path: Path, line_name: str, round_name: str) -> bool:
+    if _json_file_has_payload(json_path) or not _json_file_has_payload(progress_path):
+        return False
+    payload = _load_json_dict(progress_path)
+    payload["line_name"] = str(payload.get("line_name") or line_name)
+    payload["round_name"] = str(payload.get("round_name") or round_name)
+    payload["recovered_from_progress"] = True
+    payload["recovered_at"] = datetime.now().strftime("%F %T")
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return True
 
 
 def _line_guard_state_path(run_dir: Path) -> Path:
@@ -574,8 +623,12 @@ def main() -> int:
     realtime_material_only = "1" if _truthy(os.getenv("BARRY_LOOP_REALTIME_MATERIAL_ONLY", "0")) else "0"
     video_issue_stop_threshold = _env_int("BARRY_LOOP_VIDEO_ISSUE_STOP_THRESHOLD", 3)
     tracker_config = _load_tracker_config()
+    active_window = str(os.getenv("BARRY_LOOP_ACTIVE_WINDOW") or "").strip()
 
     while True:
+        if not _window_contains(active_window):
+            _log(f"{line_name} 当前不在运行时间窗 {active_window or '全天'} 内，暂停到下一次窗口打开。")
+            return WINDOW_PAUSED_EXIT_CODE
         if wait_for_line and wait_for_line_pool:
             ready, dependency_status = _dependency_line_ready(
                 line_name=wait_for_line,
@@ -655,6 +708,7 @@ def main() -> int:
             continue
 
         json_path = run_dir / f"{round_name}.json"
+        progress_path = run_dir / f"{round_name}.progress.json"
         summary_path = run_dir / f"{round_name}.summary"
         started = datetime.now().strftime("%F %T")
         line_report_dir = report_dir / round_name
@@ -676,12 +730,13 @@ def main() -> int:
             "BARRY_LOOP_ROUND_SCHEDULED_TIME=continuous",
             f"BARRY_LOOP_ROUND_STARTED_AT={started}",
             f"BARRY_REALTIME_RANK_ENABLED={realtime_enabled}",
+            f"BARRY_LOOP_PROGRESS_PATH={progress_path}",
         ]
         if flywheel_config:
             cmd.append(f"FLYWHEEL_CONFIG={flywheel_config}")
         cmd.extend([
-            "barry-video",
-            "backend",
+            sys.executable,
+            str(ROOT_DIR / "backend" / "flywheel_cli.py"),
             "run-batch-drama",
             "--execute",
             "--count",
@@ -750,6 +805,13 @@ def main() -> int:
             )
         if proc.returncode != 0:
             _log(f"{label} 命令返回非零（rc={proc.returncode}），继续按结果文件汇总。")
+        if _recover_json_from_progress(
+            json_path=json_path,
+            progress_path=progress_path,
+            line_name=line_name,
+            round_name=round_name,
+        ):
+            _log(f"{label} 结果 JSON 为空，已从进度快照恢复：{progress_path.name}。")
         metrics = _write_summary(
             json_path=json_path,
             summary_path=summary_path,
