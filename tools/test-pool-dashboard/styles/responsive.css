@@ -39,6 +39,14 @@
     justify-content: flex-start;
   }
 
+  .page-hero {
+    flex-direction: column;
+  }
+
+  .page-hero-tools {
+    justify-content: flex-start;
+  }
+
   .filters {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -64,6 +72,10 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .page-hero h1 {
+    font-size: 24px;
+  }
+
   .line-card,
   .top-play-card {
     flex-basis: min(92vw, 420px);
@@ -83,6 +95,12 @@
   .drawer-panel {
     inset: 12px;
     width: auto;
+  }
+
+  .section-head-main {
+    flex-direction: column;
+    gap: 4px;
+    align-items: flex-start;
   }
 
   .history-metric-value {

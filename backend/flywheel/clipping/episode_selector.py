@@ -252,6 +252,8 @@ def select_best_episode(serial_id: str | int, app_id: str, *, retry_count: int =
                 serial_id,
                 app_id,
                 retry_count=retry_count,
+                require_mp4=True,
+                allow_hls=False,
             )
             if bool(fallback.get("supported")):
                 return fallback
@@ -276,8 +278,8 @@ def select_best_episode(serial_id: str | int, app_id: str, *, retry_count: int =
         }
 
     total = len(episodes)
-    playable_rows = [row for row in episodes if _availability_score(row, {}) > 0]
-    scored = [_scored_episode(row, {}, total=total) for row in playable_rows]
+    playable_rows = [row for row in episodes if _extract_mp4_only_play_url(row, {})]
+    scored = [_scored_episode(row, {}, total=total, require_mp4=True) for row in playable_rows]
 
     if not scored:
         for row in _episode_probe_rows(episodes, total):
@@ -292,7 +294,7 @@ def select_best_episode(serial_id: str | int, app_id: str, *, retry_count: int =
                 )
             except InbeidouError:
                 info = {}
-            scored.append(_scored_episode(row, info, total=total))
+            scored.append(_scored_episode(row, info, total=total, require_mp4=True))
 
     scored.sort(key=lambda item: (float(item["final_score"]), -int(item["episode_order"])), reverse=True)
     selected = scored[0]
@@ -301,7 +303,7 @@ def select_best_episode(serial_id: str | int, app_id: str, *, retry_count: int =
             "episode_order": 1,
             "episode_count": total,
             "selection_mode": "no_playable_episode",
-            "reason": "episode rows exist but no playable mp4/play_url is available for the clipping workflow",
+            "reason": "episode rows exist but no direct MP4 source is available for the ordinary ai-cut workflow",
             "supported": False,
             "candidates": scored[: min(10, len(scored))],
         }
@@ -314,7 +316,7 @@ def select_best_episode(serial_id: str | int, app_id: str, *, retry_count: int =
         "duration": int(selected.get("duration") or 0),
         "selection_mode": "position_availability_heuristic",
         "reason": (
-            "Prefer episodes with playable assets and strong hook position, "
+            "Prefer episodes with direct MP4 assets and strong hook position, "
             "biasing toward the early-middle section instead of always Episode 1."
         ),
         "supported": True,

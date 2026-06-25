@@ -24,6 +24,7 @@ LINE_ORDER = [
     "yourchannel",
     "recent_order",
     "stardusttv",
+    "tag_test",
 ]
 LINE_PATTERN = "|".join(LINE_ORDER)
 
@@ -50,6 +51,8 @@ class LineStatus:
     line_name: str
     state: str = "未运行"
     current_round: str = "-"
+    account_pool: str = "-"
+    remaining_available_accounts: str = "-"
     latest_stage: str = "-"
     latest_stage_age: str = "-"
     last_summary: str = "-"
@@ -85,7 +88,11 @@ def _safe_age_text(ts_text: str) -> str:
 
 
 def _read_latest_summary(run_dir: Path) -> str:
-    summaries = sorted(run_dir.glob("round*.summary"))
+    def round_index(path: Path) -> int:
+        match = re.match(r"round(\d+)\.summary$", path.name)
+        return int(match.group(1)) if match else -1
+
+    summaries = sorted(run_dir.glob("round*.summary"), key=round_index)
     if not summaries:
         return "-"
     latest = summaries[-1]
@@ -101,6 +108,12 @@ def _read_latest_summary(run_dir: Path) -> str:
     unsubmitted = values.get("unsubmitted_count", "0")
     status_label = values.get("status_label", "-")
     return f"{latest.stem}: {status_label} / 请求 {requested} / 成功 {success} / 失败 {failed} / 未提交 {unsubmitted}"
+
+
+def _extract_start_detail(details: str, key: str) -> str:
+    pattern = rf"{re.escape(key)}=([^，,。]+)"
+    match = re.search(pattern, str(details or ""))
+    return match.group(1).strip() if match else ""
 
 
 def _parse_line_status(line_name: str, *, state_root: Path, day: str) -> LineStatus:
@@ -123,6 +136,9 @@ def _parse_line_status(line_name: str, *, state_root: Path, day: str) -> LineSta
         match = ROUND_START_RE.match(line)
         if match and match.group("line") == line_name:
             latest_start = (match.group("ts"), match.group("label"))
+            details = match.group("details")
+            status.account_pool = _extract_start_detail(details, "账号池") or status.account_pool
+            status.remaining_available_accounts = _extract_start_detail(details, "未达标可用账号") or status.remaining_available_accounts
             continue
         match = ROUND_DONE_RE.match(line)
         if match and match.group("line") == line_name:
@@ -237,6 +253,8 @@ def _render_report(*, state_root: Path, day: str, line_names: list[str]) -> tupl
                 f"{line_name} 线",
                 f"- 状态：{status.state}",
                 f"- 当前轮次：{status.current_round}",
+                f"- 账号池：{status.account_pool}",
+                f"- 账号池剩余可用数：{status.remaining_available_accounts}",
                 f"- 当前阶段：{status.latest_stage}",
                 f"- 阶段更新距今：{status.latest_stage_age}",
                 f"- 最近汇总：{status.last_summary}",

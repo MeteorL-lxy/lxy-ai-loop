@@ -60,8 +60,6 @@ export function modeLabel(value) {
   const map = {
     continuous: "常驻",
     continuous_dual_line: "常驻双线",
-    nightly_rounds: "夜间轮次",
-    daily: "夜间轮次",
     novel: "小说流程",
   };
   return map[String(value || "").trim()] || value || "-";
@@ -113,6 +111,7 @@ export function isDayLine(lineName) {
 }
 
 export function rangeLabel(lineName) {
+  if (String(lineName || "").trim() === "tag_test") return "美区 06:30-13:30 / 东南亚 18:30-00:30";
   return isDayLine(lineName) ? "10:00-18:00" : "18:00-次日12:00";
 }
 

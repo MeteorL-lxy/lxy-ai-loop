@@ -52,7 +52,6 @@ from inbeidou_cli import (
     receive_task,
     require_success,
     load_state,
-    resolve_drama_episode_context,
     resolve_publish_targets,
     save_state,
     submit_ws_tasks,
@@ -136,7 +135,7 @@ BATCH_EPISODE_PRECHECK_MAX_WINDOW = 8
 BATCH_PLAYABLE_SOURCE_BUFFER = 2
 BATCH_SAFETY_GATE_CONCURRENCY = 3
 STRATEGY_MEMORY_COOLDOWN_DAYS = 2
-STRATEGY_MEMORY_EVENT_TYPES = ("safety_reject", "clip_failed_source_prepare")
+STRATEGY_MEMORY_EVENT_TYPES = ("safety_reject", "clip_failed_episode_probe")
 HEARTBEAT_INTERVAL_SECONDS = 15
 DEFAULT_TEST_SUMMARY_DIR = "/Users/xinyuliu/Downloads/AI Loop/测试总结"
 DEFAULT_ANALYSIS_SUMMARY_DIR = "/Users/xinyuliu/Downloads/AI Loop/分析日报"
@@ -813,6 +812,14 @@ def _candidate_source_label(item: dict) -> str:
         return "实时榜外部素材"
     if source == "realtime_rank_matched":
         return "实时榜匹配"
+    if source == "tag_test_official_ffmpeg":
+        return "打标测试表"
+    if source == "stardusttv_official_ffmpeg":
+        return "StardustTV 剧名表"
+    if source == "recent_order_official_ffmpeg":
+        return "近月出单剧表"
+    if source == "yourchannel_official_ffmpeg":
+        return "YourChannel 白名单"
     return "接口回退"
 
 
@@ -4816,10 +4823,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Parallel clipping task count. Omit to reuse flywheel runtime clip_execute_concurrency.",
     )
     run_batch_drama.add_argument(
-        "--source-prepare-retry-count",
+        "--episode-probe-retry-count",
         type=int,
         default=None,
-        help="Extra retries for retryable source-prepare failures such as sketch timeout or SSL errors.",
+        help="Extra retries for retryable episode-list/info probe failures.",
     )
     run_batch_drama.add_argument(
         "--publish-concurrency",
@@ -4837,8 +4844,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_batch_drama.add_argument("--keep-output", action="store_true", help="Keep generated local clips after publish succeeds")
     run_batch_drama.add_argument("--upload-timeout", type=int, default=300)
     run_batch_drama.add_argument("--submit-timeout", type=int, default=90)
-    run_batch_drama.add_argument("--timeout", type=int, default=DEFAULT_TASK_TIMEOUT)
-    run_batch_drama.add_argument("--poll-interval", type=float, default=DEFAULT_POLL_INTERVAL)
+    run_batch_drama.add_argument("--timeout", type=int, default=None)
+    run_batch_drama.add_argument("--poll-interval", type=float, default=None)
     run_batch_drama.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     run_batch_drama.add_argument("--collect-wait-seconds", type=int, default=180)
     run_batch_drama.add_argument("--collect-poll-interval", type=int, default=15)

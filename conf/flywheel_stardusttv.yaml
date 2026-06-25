@@ -38,7 +38,7 @@
     "cut_type": "high_cut",
     "duration": "20",
     "output_count": 1,
-    "source_prepare_retry_count": 1,
+    "episode_probe_retry_count": 1,
     "target_width": 720,
     "target_height": 1280,
     "submit_timeout": 90,

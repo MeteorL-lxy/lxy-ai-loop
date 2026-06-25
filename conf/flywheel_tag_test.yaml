@@ -1,21 +1,21 @@
 {
   "local_db": {
-    "path": "runtime/flywheel-experiments/realtime-day/flywheel.db"
+    "path": "runtime/flywheel-experiments/tag-test/flywheel.db"
   },
   "flywheel": {
-    "candidate_pool_size": 60,
+    "candidate_pool_size": 40,
     "candidate_page_size": 20,
-    "default_platform": "",
+    "default_platform": "stardusttv",
     "default_language": "",
     "candidate_language_mode": "all",
     "candidate_languages": [],
     "default_order": "publish_at"
   },
   "realtime_rank": {
-    "enabled": true,
+    "enabled": false,
     "base_url": "https://test-api-ai-guangdada.inbeidou.cn",
     "timeout_seconds": 180,
-    "max_candidates": 60
+    "max_candidates": 0
   },
   "scoring": {
     "weights": {
@@ -29,14 +29,14 @@
     }
   },
   "selection": {
-    "recent_hard_exclusion_rounds": 20,
-    "recent_hard_exclusion_days": 7
+    "recent_hard_exclusion_rounds": 0,
+    "recent_hard_exclusion_days": 0
   },
   "clipping": {
     "default_episode_order": 1,
     "require_third_serial_id": true,
     "cut_type": "high_cut",
-    "duration": "25",
+    "duration": "20",
     "output_count": 1,
     "episode_probe_retry_count": 1,
     "target_width": 720,
@@ -48,15 +48,15 @@
   "runtime": {
     "default_publish_platforms": [],
     "clip_execute_concurrency": 4,
-    "publish_execute_concurrency": 3,
+    "publish_execute_concurrency": 2,
     "collect_wait_seconds": 180,
     "collect_poll_interval": 15,
     "cleanup_local_clips_after_publish": true
   },
   "paths": {
-    "logs_dir": "runtime/flywheel-experiments/realtime-day/logs",
-    "source_dir": "runtime/flywheel-experiments/realtime-day/source",
-    "clipped_dir": "runtime/flywheel-experiments/realtime-day/clipped",
-    "covers_dir": "runtime/flywheel-experiments/realtime-day/covers"
+    "logs_dir": "runtime/flywheel-experiments/tag-test/logs",
+    "source_dir": "runtime/flywheel-experiments/tag-test/source",
+    "clipped_dir": "runtime/flywheel-experiments/tag-test/clipped",
+    "covers_dir": "runtime/flywheel-experiments/tag-test/covers"
   }
 }

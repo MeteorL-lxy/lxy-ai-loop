@@ -25,15 +25,6 @@
   margin-top: 18px;
 }
 
-.empty-state {
-  padding: 20px;
-  border-radius: 18px;
-  border: 1px dashed var(--line-strong);
-  background: var(--surface-soft);
-  font-size: 14px;
-  line-height: 1.7;
-}
-
 .history-card {
   padding: 18px;
   border-radius: 18px;

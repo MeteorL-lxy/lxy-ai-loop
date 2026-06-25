@@ -44,11 +44,11 @@
     "cut_type": "high_cut",
     "duration": "auto",
     "output_count": 1,
-    "source_prepare_retry_count": 1,
+    "episode_probe_retry_count": 0,
     "target_width": 720,
     "target_height": 1280,
     "submit_timeout": 90,
-    "task_timeout": 1800,
+    "task_timeout": 21600,
     "poll_interval": 3,
     "dedup_pool": [
       "common_deduplication",

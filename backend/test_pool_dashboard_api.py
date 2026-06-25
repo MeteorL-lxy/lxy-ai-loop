@@ -59,6 +59,7 @@ LINE_LABELS = {
     "yourchannel": "YourChannel 剧场线账号池-白天",
     "recent_order": "近月出单剧池-夜间",
     "stardusttv": "山海剧场线账号池-夜间",
+    "tag_test": "打标账号剧测试池-夜间",
 }
 
 LINE_POOL_KEYS = {
@@ -72,6 +73,7 @@ LINE_POOL_KEYS = {
     "yourchannel": "facebook_drama_yourchannel_pool",
     "recent_order": "facebook_drama_recent_order_pool",
     "stardusttv": "facebook_drama_stardusttv_pool",
+    "tag_test": "facebook_drama_tag_test_pool",
 }
 
 ACCOUNT_GROUP_META = {
@@ -115,6 +117,10 @@ ACCOUNT_GROUP_META = {
         "label": "山海剧场线账号池-夜间",
         "description": "山海剧场夜间专用池，从备用池拆出的 15 个账号按剧名表轮转，使用官方视频 FFmpeg 15-30 秒快切。",
     },
+    "facebook_drama_tag_test_pool": {
+        "label": "打标账号剧测试池-夜间",
+        "description": "打标测试专用池，按剧表地区匹配同地区账号，使用 StardustTV 官方视频 FFmpeg 15-30 秒快切。",
+    },
     "facebook_drama_reel_block_pool": {
         "label": "Reel 限制账号池",
         "description": "连续 5 次出现“不能发布 Reel 视频”后自动迁入，具体来源线路记录在 reel_publish_block_state 中。",
@@ -144,6 +150,7 @@ LINE_DISPLAY_NAMES = {
     "yourchannel": "YourChannel 剧场线账号池-白天",
     "recent_order": "近月出单剧池-夜间",
     "stardusttv": "山海剧场线账号池-夜间",
+    "tag_test": "打标账号剧测试池-夜间",
 }
 
 FINAL_SUCCESS_PREFIXES = ("published",)
@@ -287,6 +294,8 @@ def _line_clip_method(line_name: str) -> str:
         return "近月出单剧快切"
     if normalized == "stardusttv":
         return "StardustTV 官方快切"
+    if normalized == "tag_test":
+        return "打标地区匹配快切"
     return ""
 
 
@@ -1765,6 +1774,7 @@ class TestPoolDashboardService:
             "realtime",
             "recent_order",
             "stardusttv",
+            "tag_test",
             "realtime_single",
             "ordinary",
             "fbhot_test",
@@ -2636,6 +2646,7 @@ class TestPoolDashboardService:
             "realtime",
             "recent_order",
             "stardusttv",
+            "tag_test",
             "realtime_single",
             "ordinary",
             "fbhot_test",

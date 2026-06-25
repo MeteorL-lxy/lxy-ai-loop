@@ -6,13 +6,13 @@ export async function ensureLayoutLoaded() {
   }
   if (!layoutPromise) {
     const partials = {
-      shell: "./partials/shell.html?v=20260624-1",
-      home: "./partials/pages/home.html?v=20260624-1",
-      lines: "./partials/pages/lines.html?v=20260624-1",
-      content: "./partials/pages/content.html?v=20260624-1",
-      trend: "./partials/pages/trend.html?v=20260624-1",
-      pools: "./partials/pages/pools.html?v=20260624-1",
-      rounds: "./partials/pages/rounds.html?v=20260624-1",
+      shell: "./partials/shell.html?v=20260624-4",
+      home: "./partials/pages/home.html?v=20260624-4",
+      lines: "./partials/pages/lines.html?v=20260624-4",
+      content: "./partials/pages/content.html?v=20260624-4",
+      trend: "./partials/pages/trend.html?v=20260624-4",
+      pools: "./partials/pages/pools.html?v=20260624-4",
+      rounds: "./partials/pages/rounds.html?v=20260624-4",
     };
 
     const loadPartial = async (url) => {

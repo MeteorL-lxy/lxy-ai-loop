@@ -66,6 +66,10 @@ def _window_contains(window: str, minute: int | None = None) -> bool:
     raw = str(window or "").strip()
     if not raw:
         return True
+    if "," in raw:
+        parts = [part.strip() for part in raw.split(",") if part.strip()]
+        if parts:
+            return any(_window_contains(part, minute=minute) for part in parts)
     try:
         start, end = _parse_window(raw)
     except Exception:
@@ -236,6 +240,21 @@ LINE_CONFIGS = {
         "idle_sleep_seconds": _env("BARRY_LOOP_STARDUSTTV_IDLE_SLEEP_SECONDS", "300"),
         "error_sleep_seconds": _env("BARRY_LOOP_STARDUSTTV_ERROR_SLEEP_SECONDS", "20"),
         "log": TMP_DIR / "forever_stardusttv.log",
+    },
+    "tag_test": {
+        "enabled": _env("BARRY_LOOP_TAG_TEST_ENABLED", "0"),
+        "window": _env("BARRY_LOOP_TAG_TEST_WINDOW", "06:30-13:30,18:30-00:30"),
+        "pool": _env("BARRY_LOOP_TAG_TEST_ACCOUNT_POOL", "facebook_drama_tag_test_pool"),
+        "count": _env("BARRY_LOOP_TAG_TEST_COUNT", "0"),
+        "flywheel_config": str(os.getenv("BARRY_LOOP_TAG_TEST_FLYWHEEL_CONFIG") or "conf/flywheel_tag_test.yaml").strip(),
+        "fb_heat_signal_file": str(os.getenv("BARRY_LOOP_TAG_TEST_FB_HEAT_SIGNAL_FILE") or "").strip(),
+        "realtime_enabled": _env("BARRY_LOOP_TAG_TEST_RANK_ENABLED", "0"),
+        "realtime_material_only": _env("BARRY_LOOP_TAG_TEST_MATERIAL_ONLY", "0"),
+        "creative_list_material_only": _env("BARRY_LOOP_TAG_TEST_CREATIVE_LIST_MATERIAL_ONLY", "0"),
+        "sleep_seconds": _env("BARRY_LOOP_TAG_TEST_SLEEP_SECONDS", "45"),
+        "idle_sleep_seconds": _env("BARRY_LOOP_TAG_TEST_IDLE_SLEEP_SECONDS", "300"),
+        "error_sleep_seconds": _env("BARRY_LOOP_TAG_TEST_ERROR_SLEEP_SECONDS", "20"),
+        "log": TMP_DIR / "forever_tag_test.log",
     },
 }
 

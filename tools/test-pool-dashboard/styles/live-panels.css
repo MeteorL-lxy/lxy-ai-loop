@@ -33,10 +33,10 @@
 }
 
 .line-card {
-  padding: 18px;
+  padding: 16px;
   border: 1px solid var(--line);
-  border-radius: 24px;
-  background: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%);
+  border-radius: 16px;
+  background: #fff;
 }
 
 .line-card-head {
@@ -55,7 +55,7 @@
 
 .line-title-row h3 {
   margin: 0;
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 900;
   line-height: 1.2;
 }
@@ -64,13 +64,13 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 74px;
-  height: 32px;
-  padding: 0 12px;
+  min-width: 68px;
+  height: 30px;
+  padding: 0 10px;
   border-radius: 999px;
   border: 1px solid var(--line);
   background: #fff;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 800;
 }
 
@@ -113,49 +113,25 @@
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  margin-top: 12px;
+  margin-top: 10px;
 }
 
 .meta-chip {
   display: inline-flex;
   align-items: center;
-  min-height: 30px;
-  padding: 0 12px;
+  min-height: 28px;
+  padding: 0 10px;
   border-radius: 999px;
   border: 1px solid var(--line);
   background: #fff;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--muted);
-}
-
-.score-box {
-  width: 86px;
-  border-radius: 24px;
-  padding: 10px 0 8px;
-  text-align: center;
-  color: #fff;
-  background: linear-gradient(180deg, #db969c 0%, #ca7f86 100%);
-}
-
-.score-box strong {
-  display: block;
-  font-size: 18px;
-  font-weight: 900;
-  line-height: 1;
-}
-
-.score-box span {
-  display: block;
-  margin-top: 6px;
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.4px;
 }
 
 .line-section-title,
 .top-play-copy-title {
-  margin: 18px 0 10px;
-  font-size: 13px;
+  margin: 16px 0 10px;
+  font-size: 12px;
   font-weight: 800;
 }
 
@@ -166,7 +142,7 @@
 }
 
 .mini-stat {
-  padding: 14px 14px 12px;
+  padding: 12px;
 }
 
 .mini-stat span {
@@ -178,7 +154,7 @@
 .mini-stat strong {
   display: block;
   margin-top: 8px;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 900;
 }
 
@@ -252,8 +228,8 @@
 
 .strategy-row {
   display: grid;
-  grid-template-columns: 60px minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 2px;
   align-items: start;
 }
 
@@ -278,6 +254,17 @@
   max-height: 320px;
   overflow-y: auto;
   padding-right: 4px;
+}
+
+.issue-summary {
+  margin-bottom: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.issue-summary strong {
+  font-weight: 900;
 }
 
 .issue-item {

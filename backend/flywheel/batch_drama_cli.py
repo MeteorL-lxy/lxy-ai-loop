@@ -36,6 +36,7 @@ from flywheel.clipping.ai_cut_animation import (
     download_segment_video,
 )
 from flywheel.clipping.episode_selector import (
+    _extract_mp4_only_play_url,
     select_direct_episode_info_episode,
     select_random_playable_episode,
 )
@@ -118,7 +119,9 @@ def _effective_ai_task_timeout(requested_timeout: object) -> int:
         requested = int(float(requested_timeout or 0))
     except (TypeError, ValueError):
         requested = 0
-    return max(DEFAULT_MIN_TASK_TIMEOUT, requested)
+    if requested > 0:
+        return max(DEFAULT_MIN_TASK_TIMEOUT, requested)
+    return DEFAULT_MIN_TASK_TIMEOUT or 21600
 
 
 def bind(ctx):
@@ -348,7 +351,7 @@ def _batch_episode_order(row: dict) -> int:
 
 def _has_playable_episode_asset(row: dict, info=None) -> bool:
     info = info or {}
-    return bool(row.get("play_url") or info.get("play_url") or info.get("mp4_OD") or info.get("m3u8_HD"))
+    return bool(_extract_mp4_only_play_url(row, info))
 
 
 def _select_or_validate_batch_episode(drama: dict, args: argparse.Namespace) -> dict:
@@ -377,7 +380,7 @@ def _select_or_validate_batch_episode(drama: dict, args: argparse.Namespace) -> 
         }
     serial_id = drama.get("serial_id")
     app_id = str(drama.get("app_id") or "")
-    retry_count = max(0, int(getattr(args, "source_prepare_retry_count", 0) or 0))
+    retry_count = max(0, int(getattr(args, "episode_probe_retry_count", 0) or 0))
     if not args.episode_order:
         try:
             return select_best_episode(serial_id, app_id, retry_count=retry_count)
@@ -799,14 +802,14 @@ def _normalize_official_ffmpeg_clip_duration(requested_duration) -> int | str:
         if explicit > 0:
             if line_name == "recent_order":
                 return max(25, min(35, explicit))
-            if line_name == "stardusttv":
+            if line_name in {"stardusttv", "tag_test"}:
                 return max(15, min(30, explicit))
             if line_name == "yourchannel":
                 return max(15, min(20, explicit))
             return max(12, min(20, explicit))
     if line_name == "recent_order":
         return 30
-    if line_name == "stardusttv":
+    if line_name in {"stardusttv", "tag_test"}:
         return 20
     if line_name == "yourchannel":
         return 18
@@ -1080,7 +1083,7 @@ def _creative_list_material_mode_enabled() -> bool:
 
 
 def _official_ffmpeg_mode_enabled() -> bool:
-    return _line_in("fbhot_test", "yourchannel", "recent_order", "stardusttv")
+    return _line_in("fbhot_test", "yourchannel", "recent_order", "stardusttv", "tag_test")
 
 
 def _yourchannel_mode_enabled() -> bool:
@@ -1093,6 +1096,10 @@ def _recent_order_mode_enabled() -> bool:
 
 def _stardusttv_mode_enabled() -> bool:
     return _line_in("stardusttv")
+
+
+def _tag_test_mode_enabled() -> bool:
+    return _line_in("tag_test")
 
 
 def _select_realtime_external_sources(args: argparse.Namespace, config, *, target_count: int | None = None) -> tuple[list[dict], list[dict]]:
@@ -1336,7 +1343,7 @@ def _select_recent_order_sources(args: argparse.Namespace, config, *, target_cou
     total_rows = len(rows)
     cursor = int(state.get("next_index") or 0) % total_rows
     cycle_count = int(state.get("cycle_count") or 0)
-    retry_count = max(0, int(getattr(args, "source_prepare_retry_count", 0) or 0))
+    retry_count = max(0, int(getattr(args, "episode_probe_retry_count", 0) or 0))
     max_scan = max(total_rows, desired_count * 50)
     scanned = 0
     sources: list[dict[str, object]] = []
@@ -1546,7 +1553,7 @@ def _select_stardusttv_sources(args: argparse.Namespace, config, *, target_count
     total_rows = len(rows)
     cursor = int(state.get("next_index") or 0) % total_rows
     cycle_count = int(state.get("cycle_count") or 0)
-    retry_count = max(0, int(getattr(args, "source_prepare_retry_count", 0) or 0))
+    retry_count = max(0, int(getattr(args, "episode_probe_retry_count", 0) or 0))
     max_scan = max(total_rows, desired_count * 80)
     scanned = 0
     sources: list[dict[str, object]] = []
@@ -1621,7 +1628,457 @@ def _select_stardusttv_sources(args: argparse.Namespace, config, *, target_count
             },
         )
         raise SystemExit("StardustTV 线路已扫描剧名表，但没有找到可直接进入官方 FFmpeg 快切的素材。")
-    return sources, skipped[:10]
+    return sources, skipped
+
+
+def _tag_test_title_sheet_path() -> Path:
+    raw = str(os.getenv("BARRY_LOOP_TAG_TEST_FILE") or "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return Path("/Users/xinyuliu/Downloads/AI Loop/打标测试/打标剧.xlsx").resolve()
+
+
+def _tag_test_cursor_state_path() -> Path:
+    raw = str(os.getenv("BARRY_LOOP_TAG_TEST_STATE_FILE") or "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    state_root = str(os.getenv("BARRY_LOOP_STATE_ROOT") or "").strip()
+    base = Path(state_root).expanduser().resolve() if state_root else (MODULE_ROOT_DIR / "runtime" / "continuous-loop").resolve()
+    return (base / "_shared" / "tag_test_cursor.json").resolve()
+
+
+def _tag_test_assignment_state_path() -> Path:
+    raw = str(os.getenv("BARRY_LOOP_TAG_TEST_ASSIGNMENT_FILE") or "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    state_root = str(os.getenv("BARRY_LOOP_STATE_ROOT") or "").strip()
+    base = Path(state_root).expanduser().resolve() if state_root else (MODULE_ROOT_DIR / "runtime" / "continuous-loop").resolve()
+    return (base / "_shared" / "tag_test_drama_account_map.json").resolve()
+
+
+def _tag_test_region_from_codes(value: object) -> str:
+    text = str(value or "").strip().upper()
+    if not text:
+        return ""
+    us_codes = {"US"}
+    sea_codes = {"ID", "TH", "VN", "PH", "MY", "SG", "KH", "MM", "LA", "BN", "TL"}
+    best_region = ""
+    best_score = -1.0
+    for match in re.finditer(r"\b([A-Z]{2})(?:\(([\d.]+)\))?", text):
+        code = match.group(1)
+        region = "美区" if code in us_codes else ("东南亚" if code in sea_codes else "")
+        if not region:
+            continue
+        try:
+            score = float(match.group(2) or 1.0)
+        except Exception:
+            score = 1.0
+        if score > best_score:
+            best_region = region
+            best_score = score
+    return best_region
+
+
+def _tag_test_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "y", "是", "可分发"}
+
+
+def _parse_tag_test_hhmm(value: str) -> int:
+    hour_text, minute_text = str(value or "").strip().split(":", 1)
+    hour = int(hour_text)
+    minute = int(minute_text)
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError(f"invalid HH:MM value: {value}")
+    return hour * 60 + minute
+
+
+def _tag_test_current_minute() -> int:
+    override = str(os.getenv("BARRY_LOOP_TAG_TEST_NOW_HHMM") or "").strip()
+    if override:
+        return _parse_tag_test_hhmm(override)
+    now = time.localtime()
+    return int(now.tm_hour) * 60 + int(now.tm_min)
+
+
+def _tag_test_window_contains(window: str, minute: int | None = None) -> bool:
+    raw = str(window or "").strip()
+    if not raw:
+        return True
+    try:
+        start, end = _parse_tag_test_hhmm(raw.split("-", 1)[0]), _parse_tag_test_hhmm(raw.split("-", 1)[1])
+    except Exception:
+        return True
+    current = _tag_test_current_minute() if minute is None else int(minute)
+    if start == end:
+        return True
+    if start < end:
+        return start <= current < end
+    return current >= start or current < end
+
+
+def _tag_test_region_windows() -> dict[str, list[str]]:
+    return {
+        "美区": [
+            str(os.getenv("BARRY_LOOP_TAG_TEST_US_WINDOW_BACKFILL") or "06:30-08:00").strip(),
+            str(os.getenv("BARRY_LOOP_TAG_TEST_US_WINDOW_PRIMARY") or "08:00-13:30").strip(),
+        ],
+        "东南亚": [
+            str(os.getenv("BARRY_LOOP_TAG_TEST_SEA_WINDOW") or "18:30-00:30").strip(),
+        ],
+    }
+
+
+def _tag_test_region_publish_allowed(region: str) -> bool:
+    windows = _tag_test_region_windows().get(str(region or "").strip()) or []
+    current = _tag_test_current_minute()
+    return any(_tag_test_window_contains(window, minute=current) for window in windows if str(window or "").strip())
+
+
+def _load_tag_test_titles_from_excel(path: Path) -> list[dict[str, object]]:
+    try:
+        from openpyxl import load_workbook
+    except Exception:
+        return []
+    try:
+        workbook = load_workbook(path, read_only=True, data_only=True)
+    except Exception:
+        return []
+    worksheet = workbook[workbook.sheetnames[0]]
+    header = [
+        str(value or "").strip()
+        for value in next(worksheet.iter_rows(min_row=1, max_row=1, values_only=True), ())
+    ]
+    if "drama_title" not in header:
+        return []
+    title_idx = header.index("drama_title")
+    region_idx = header.index("recommended_regions") if "recommended_regions" in header else -1
+    distributable_idx = header.index("distributable") if "distributable" in header else -1
+    quality_idx = header.index("quality_score") if "quality_score" in header else -1
+    rows: list[dict[str, object]] = []
+    seen: set[tuple[str, str]] = set()
+    for row_number, row in enumerate(worksheet.iter_rows(min_row=2, values_only=True), start=2):
+        if title_idx >= len(row):
+            continue
+        title = str(row[title_idx] or "").strip()
+        if not title:
+            continue
+        if distributable_idx >= 0 and distributable_idx < len(row) and not _tag_test_bool(row[distributable_idx]):
+            continue
+        region = _tag_test_region_from_codes(row[region_idx] if 0 <= region_idx < len(row) else "")
+        if region not in {"美区", "东南亚"}:
+            continue
+        key = (title.casefold(), region)
+        if key in seen:
+            continue
+        seen.add(key)
+        quality_score = 0.0
+        if 0 <= quality_idx < len(row):
+            try:
+                quality_score = float(row[quality_idx] or 0.0)
+            except Exception:
+                quality_score = 0.0
+        rows.append(
+            {
+                "row_number": row_number,
+                "title": title,
+                "region": region,
+                "recommended_regions": str(row[region_idx] or "").strip() if 0 <= region_idx < len(row) else "",
+                "quality_score": quality_score,
+            }
+        )
+    return rows
+
+
+def _load_tag_test_titles() -> list[dict[str, object]]:
+    path = _tag_test_title_sheet_path()
+    if not path.exists():
+        return []
+    if path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+        return []
+    return _load_tag_test_titles_from_excel(path)
+
+
+def _load_tag_test_cursor_state() -> dict[str, object]:
+    path = _tag_test_cursor_state_path()
+    if not path.exists():
+        return {"next_index": 0, "cycle_count": 0}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"next_index": 0, "cycle_count": 0}
+    if not isinstance(payload, dict):
+        return {"next_index": 0, "cycle_count": 0}
+    return {
+        "next_index": max(0, int(payload.get("next_index") or 0)),
+        "cycle_count": max(0, int(payload.get("cycle_count") or 0)),
+    }
+
+
+def _save_tag_test_cursor_state(next_index: int, cycle_count: int) -> None:
+    path = _tag_test_cursor_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "next_index": max(0, int(next_index or 0)),
+        "cycle_count": max(0, int(cycle_count or 0)),
+        "updated_at": time.strftime("%F %T"),
+    }
+    temp_path = path.with_suffix(f"{path.suffix}.tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temp_path.replace(path)
+
+
+def _select_tag_test_sources(
+    args: argparse.Namespace,
+    config,
+    *,
+    target_count: int | None = None,
+    allowed_regions: set[str] | None = None,
+) -> tuple[list[dict], list[dict]]:
+    del config
+    desired_count = max(args.count, int(target_count or args.count))
+    rows = _load_tag_test_titles()
+    if not rows:
+        raise SystemExit(f"打标测试剧 Excel 为空、缺失或没有美区/东南亚可用剧：{_tag_test_title_sheet_path()}")
+
+    state = _load_tag_test_cursor_state()
+    total_rows = len(rows)
+    cursor = int(state.get("next_index") or 0) % total_rows
+    cycle_count = int(state.get("cycle_count") or 0)
+    retry_count = max(0, int(getattr(args, "episode_probe_retry_count", 0) or 0))
+    max_scan = max(total_rows, desired_count * 80)
+    scanned = 0
+    sources: list[dict[str, object]] = []
+    skipped: list[dict[str, object]] = []
+
+    while len(sources) < desired_count and scanned < max_scan:
+        row = dict(rows[cursor])
+        title = str(row.get("title") or "").strip()
+        region = str(row.get("region") or "").strip()
+        if allowed_regions is not None and region not in allowed_regions:
+            skipped.append(
+                {
+                    "title": title,
+                    "app_id": "stardusttv",
+                    "row_number": int(row.get("row_number") or 0),
+                    "region": region,
+                    "reason": "region_has_no_unmet_account",
+                }
+            )
+            scanned += 1
+            cursor = (cursor + 1) % total_rows
+            if cursor == 0:
+                cycle_count += 1
+            continue
+        if not _tag_test_region_publish_allowed(region):
+            skipped.append(
+                {
+                    "title": title,
+                    "app_id": "stardusttv",
+                    "row_number": int(row.get("row_number") or 0),
+                    "region": region,
+                    "reason": "region_outside_publish_window",
+                }
+            )
+            scanned += 1
+            cursor = (cursor + 1) % total_rows
+            if cursor == 0:
+                cycle_count += 1
+            continue
+        drama, search_meta = _find_official_title_match(title, "stardusttv")
+        _emit_status_line(
+            "tag_test_title_search",
+            {
+                "line": _line_name(),
+                **search_meta,
+                "row_number": int(row.get("row_number") or 0),
+                "region": region,
+                "recommended_regions": str(row.get("recommended_regions") or ""),
+                "region_windows": _tag_test_region_windows().get(region, []),
+                "matched": bool(drama),
+            },
+        )
+        if not drama:
+            skipped.append({"title": title, "app_id": "stardusttv", "row_number": int(row.get("row_number") or 0), "region": region, "reason": "official_title_not_found"})
+        else:
+            episode = select_random_playable_episode(
+                str(drama.get("serial_id") or ""),
+                "stardusttv",
+                retry_count=retry_count,
+                require_mp4=True,
+                allow_hls=True,
+            )
+            if not bool(episode.get("supported")):
+                skipped.append({"title": title, "app_id": "stardusttv", "row_number": int(row.get("row_number") or 0), "region": region, "reason": str(episode.get("reason") or "unsupported_episode")})
+            else:
+                drama["source_mode"] = "official_ffmpeg"
+                drama["candidate_fetch_source"] = "tag_test_official_ffmpeg"
+                drama["candidate_source_platform"] = "stardusttv"
+                drama["tag_test_row_number"] = int(row.get("row_number") or 0)
+                drama["tag_test_region"] = region
+                drama["tag_test_recommended_regions"] = str(row.get("recommended_regions") or "")
+                drama["tag_test_cycle_count"] = cycle_count
+                drama["candidate_final_score"] = float(row.get("quality_score") or 0.0)
+                sources.append({"drama": drama, "episode": episode})
+        scanned += 1
+        cursor = (cursor + 1) % total_rows
+        if cursor == 0:
+            cycle_count += 1
+
+    if bool(getattr(args, "execute", False)):
+        _save_tag_test_cursor_state(cursor, cycle_count)
+    if not sources:
+        reason_counts = _count_skip_reasons(skipped)
+        _emit_status_line(
+            "tag_test_selection_empty",
+            {
+                "line": _line_name(),
+                "title_count": total_rows,
+                "matched_source_count": 0,
+                "scanned_count": scanned,
+                "allowed_regions": sorted(allowed_regions) if allowed_regions is not None else [],
+                "skip_reason_counts": reason_counts,
+                "skipped_preview": skipped[:10],
+            },
+        )
+    return sources, skipped
+
+
+def _tag_test_source_key(source: dict) -> str:
+    drama = source.get("drama") if isinstance(source.get("drama"), dict) else {}
+    serial_id = str(drama.get("serial_id") or drama.get("matched_official_serial_id") or "").strip()
+    if serial_id:
+        return f"serial:{serial_id}"
+    title = str(drama.get("title") or drama.get("title_ch") or "").strip().casefold()
+    return f"title:{title}" if title else ""
+
+
+def _load_tag_test_assignment_state() -> dict[str, object]:
+    path = _tag_test_assignment_state_path()
+    if not path.exists():
+        return {"assignments": {}}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"assignments": {}}
+    if not isinstance(payload, dict):
+        return {"assignments": {}}
+    assignments = payload.get("assignments") if isinstance(payload.get("assignments"), dict) else {}
+    return {"assignments": dict(assignments)}
+
+
+def _save_tag_test_assignment_state(state: dict[str, object]) -> None:
+    path = _tag_test_assignment_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "assignments": dict(state.get("assignments") or {}),
+        "updated_at": time.strftime("%F %T"),
+    }
+    temp_path = path.with_suffix(f"{path.suffix}.tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temp_path.replace(path)
+
+
+def _tag_test_account_region(account: dict, profiles: dict[str, dict[str, object]]) -> str:
+    for key in _account_profile_lookup_keys(account):
+        profile = profiles.get(key)
+        if isinstance(profile, dict):
+            region = str(profile.get("region") or "").strip()
+            if region:
+                return region
+    return ""
+
+
+def _tag_test_available_account_regions(accounts: list[dict]) -> tuple[set[str], dict[str, int]]:
+    profile_builder = globals().get("build_account_assignment_profiles")
+    profiles = profile_builder(recent_days=14) if callable(profile_builder) else {}
+    counts: dict[str, int] = {"美区": 0, "东南亚": 0}
+    for account in accounts:
+        region = _tag_test_account_region(account, profiles)
+        if region in counts:
+            counts[region] += 1
+    return {region for region, count in counts.items() if count > 0}, counts
+
+
+def _assign_tag_test_sources_to_accounts(
+    sources: list[dict],
+    accounts: list[dict],
+    *,
+    requested_count: int,
+    execute: bool,
+) -> tuple[list[tuple[dict, dict]], list[dict[str, object]], dict[str, int]]:
+    profile_builder = globals().get("build_account_assignment_profiles")
+    profiles = profile_builder(recent_days=14) if callable(profile_builder) else {}
+    available_by_id = {str(account.get("account_id") or "").strip(): account for account in accounts}
+    accounts_by_region: dict[str, list[dict]] = {"美区": [], "东南亚": []}
+    for account in accounts:
+        region = _tag_test_account_region(account, profiles)
+        if region in accounts_by_region:
+            accounts_by_region[region].append(account)
+
+    state = _load_tag_test_assignment_state()
+    assignment_map = state.get("assignments") if isinstance(state.get("assignments"), dict) else {}
+    assignments: list[tuple[dict, dict]] = []
+    skipped: list[dict[str, object]] = []
+    used_counts: dict[str, int] = {}
+
+    for source in sources:
+        if len(assignments) >= requested_count:
+            break
+        drama = source.get("drama") if isinstance(source.get("drama"), dict) else {}
+        region = str(drama.get("tag_test_region") or "").strip()
+        source_key = _tag_test_source_key(source)
+        title = str(drama.get("title") or "").strip()
+        if region not in accounts_by_region or not source_key:
+            skipped.append({"title": title, "region": region, "reason": "missing_region_or_source_key"})
+            continue
+
+        mapped = assignment_map.get(source_key) if isinstance(assignment_map, dict) else None
+        mapped_account_id = str((mapped or {}).get("account_id") if isinstance(mapped, dict) else mapped or "").strip()
+        if mapped_account_id:
+            account = available_by_id.get(mapped_account_id)
+            if not account:
+                skipped.append({"title": title, "region": region, "account_id": mapped_account_id, "reason": "mapped_account_not_available"})
+                continue
+            if _tag_test_account_region(account, profiles) != region:
+                skipped.append({"title": title, "region": region, "account_id": mapped_account_id, "reason": "mapped_account_region_mismatch"})
+                continue
+        else:
+            candidates = accounts_by_region.get(region) or []
+            if not candidates:
+                skipped.append({"title": title, "region": region, "reason": "no_same_region_account"})
+                continue
+            account = sorted(
+                candidates,
+                key=lambda item: (
+                    used_counts.get(str(item.get("account_id") or "").strip(), 0),
+                    str(item.get("account_id") or "").strip(),
+                ),
+            )[0]
+            account_id = str(account.get("account_id") or "").strip()
+            assignment_map[source_key] = {
+                "account_id": account_id,
+                "region": region,
+                "title": title,
+                "serial_id": str(drama.get("serial_id") or ""),
+                "created_at": time.strftime("%F %T"),
+            }
+
+        account_id = str(account.get("account_id") or "").strip()
+        used_counts[account_id] = used_counts.get(account_id, 0) + 1
+        assignments.append((account, source))
+
+    if execute:
+        state["assignments"] = assignment_map
+        _save_tag_test_assignment_state(state)
+    meta = {
+        "tag_test_us_account_count": len(accounts_by_region["美区"]),
+        "tag_test_sea_account_count": len(accounts_by_region["东南亚"]),
+        "tag_test_assignment_map_size": len(assignment_map),
+    }
+    return assignments, skipped, meta
 
 
 def _yourchannel_title_allowlist_path() -> Path:
@@ -1737,7 +2194,7 @@ def _select_yourchannel_sources(args: argparse.Namespace, config, *, target_coun
         if not drama:
             skipped.append({"title": title, "app_id": "yourchannel_drama", "reason": "official_title_not_found"})
             continue
-        retry_count = max(0, int(getattr(args, "source_prepare_retry_count", 0) or 0))
+        retry_count = max(0, int(getattr(args, "episode_probe_retry_count", 0) or 0))
         episode = select_direct_episode_info_episode(
             str(drama.get("serial_id") or ""),
             "yourchannel_drama",
@@ -1960,7 +2417,11 @@ def _build_batch_plan(args: argparse.Namespace, config) -> dict[str, object]:
     target = _resolve_batch_publish_targets(args)
     accounts = list(target["accounts"])
     random.shuffle(accounts)
-    if args.allow_account_reuse and len(accounts) < args.count:
+    if _tag_test_mode_enabled():
+        # Region matching needs visibility into the full eligible pool before
+        # trimming to the requested output count.
+        accounts = list(accounts)
+    elif args.allow_account_reuse and len(accounts) < args.count:
         expanded_accounts = []
         for index in range(args.count):
             expanded_accounts.append(accounts[index % len(accounts)])
@@ -1969,7 +2430,17 @@ def _build_batch_plan(args: argparse.Namespace, config) -> dict[str, object]:
         accounts = accounts[: args.count]
 
     plan_items: list[dict] = []
-    if _stardusttv_mode_enabled():
+    tag_test_allowed_regions: set[str] | None = None
+    tag_test_account_region_counts: dict[str, int] = {}
+    if _tag_test_mode_enabled():
+        tag_test_allowed_regions, tag_test_account_region_counts = _tag_test_available_account_regions(accounts)
+        selected_sources, skipped = _select_tag_test_sources(
+            args,
+            config,
+            target_count=_batch_source_reserve_target(args.count),
+            allowed_regions=tag_test_allowed_regions,
+        )
+    elif _stardusttv_mode_enabled():
         selected_sources, skipped = _select_stardusttv_sources(
             args,
             config,
@@ -2032,11 +2503,16 @@ def _build_batch_plan(args: argparse.Namespace, config) -> dict[str, object]:
         "skipped_preview": skipped[:10],
         "realtime_enabled": bool(_realtime_material_mode_enabled()),
         "creative_list_enabled": bool(_creative_list_material_mode_enabled()),
+        "tag_test_enabled": bool(_tag_test_mode_enabled()),
         "stardusttv_enabled": bool(_stardusttv_mode_enabled()),
         "recent_order_enabled": bool(_recent_order_mode_enabled()),
         "yourchannel_enabled": bool(_yourchannel_mode_enabled()),
         "official_ffmpeg_enabled": bool(_official_ffmpeg_mode_enabled()),
     }
+    if _tag_test_mode_enabled():
+        selection_summary["tag_test_region_windows"] = _tag_test_region_windows()
+        selection_summary["tag_test_allowed_regions"] = sorted(tag_test_allowed_regions or set())
+        selection_summary["tag_test_account_region_counts"] = dict(tag_test_account_region_counts)
     _emit_status_line("selection_summary", selection_summary)
     unique_playable_source_count = len(
         {
@@ -2056,7 +2532,19 @@ def _build_batch_plan(args: argparse.Namespace, config) -> dict[str, object]:
             requested_count=len(accounts),
         )
         source_reuse_fill_count = max(0, len(primary_sources) - unique_playable_source_count)
-    assignments = _assign_candidates_to_accounts(primary_sources, accounts)
+    if _tag_test_mode_enabled():
+        assignments, tag_test_skipped, tag_test_meta = _assign_tag_test_sources_to_accounts(
+            primary_sources,
+            accounts,
+            requested_count=args.count,
+            execute=bool(getattr(args, "execute", False)),
+        )
+        skipped = [*skipped, *tag_test_skipped[:10]]
+        selection_summary.update(tag_test_meta)
+        selection_summary["tag_test_assignment_skipped_count"] = len(tag_test_skipped)
+        selection_summary["tag_test_assignment_skip_reason_counts"] = _count_skip_reasons(tag_test_skipped)
+    else:
+        assignments = _assign_candidates_to_accounts(primary_sources, accounts)
     for account, source in assignments:
         index = len(plan_items)
         plan_items.append(
@@ -2267,8 +2755,8 @@ def _record_batch_learning_logs(*, round_id: int, items: list[dict], safety_reje
         clip_options = item.get("clip_options") or {}
         event_type = "publish_processing"
         error_text = str(item.get("error") or "").strip()
-        if "等待短剧素材就绪超时" in error_text:
-            event_type = "clip_failed_source_prepare"
+        if "剧集" in error_text or "episode" in error_text.lower():
+            event_type = "clip_failed_episode_probe"
         elif item.get("status") == "failed":
             event_type = "publish_failed_final"
         elif str((item.get("publish") or {}).get("tasks") or "") and any(
@@ -2778,6 +3266,19 @@ def _cut_external_video_segment(
 
 
 def _clip_batch_item(item: dict, args: argparse.Namespace, config) -> dict:
+    clip_stage_started = time.perf_counter()
+    clip_stage_timings: dict[str, float] = {}
+
+    def mark_stage(name: str, started_at: float) -> None:
+        clip_stage_timings[name] = round(time.perf_counter() - started_at, 3)
+
+    def with_stage_timings(payload: dict) -> dict:
+        payload["clip_stage_timings"] = {
+            **clip_stage_timings,
+            "total": round(time.perf_counter() - clip_stage_started, 3),
+        }
+        return payload
+
     drama = item["drama"]
     episode_order = int((item.get("episode") or {}).get("episode_order") or 1)
     clip_options = item["clip_options"]
@@ -2866,29 +3367,26 @@ def _clip_batch_item(item: dict, args: argparse.Namespace, config) -> dict:
             "status": "clipped",
             "source_path": str(downloaded_source),
             "clip": clip_result,
+            "clip_stage_timings": {
+                "total": round(time.perf_counter() - clip_stage_started, 3),
+            },
         }
 
-    clip_args = SimpleNamespace(
-        task_id=drama.get("task_id"),
-        search="",
-        serial_id=drama.get("serial_id"),
-        app_id=drama.get("app_id"),
-        episode_order=episode_order,
-        drama_task_type=drama.get("task_type") or "1",
-        deduplication=[],
-        watermark="",
-        duration="",
-        output_count=1,
-        cut_type="ai_cut_animation",
-        script_count=1,
-        merge_video=False,
-        upload_timeout=args.upload_timeout,
-        submit_timeout=args.submit_timeout,
-        timeout=args.timeout,
-        poll_interval=args.poll_interval,
-        source_prepare_retry_count=getattr(args, "source_prepare_retry_count", 0),
-    )
-    source_context = resolve_drama_episode_context(clip_args)
+    # ai-cut owns official drama download + clipping. The old Barry clip path
+    # needs upload/window context, but doing that here duplicates ai-cut's work
+    # and can block ordinary workers for minutes before task creation.
+    source_context = {
+        "source_type": "ai_cut_animation_official_drama",
+        "task_id": drama.get("task_id"),
+        "task_type": drama.get("task_type") or "1",
+        "title": drama.get("title"),
+        "serial_id": int(drama.get("serial_id") or 0) if str(drama.get("serial_id") or "").isdigit() else drama.get("serial_id"),
+        "app_id": str(drama.get("app_id") or ""),
+        "episode_order": int(episode_order),
+        "media_url": "",
+        "filename": f"{drama.get('title') or 'drama'}-E{int(episode_order):02d}",
+    }
+    mark_stage("line_context_prepare", clip_stage_started)
     app_id = str(drama.get("app_id") or "").strip()
     serial_id = str(drama.get("serial_id") or "").strip()
     third_serial_id = str(
@@ -2896,7 +3394,8 @@ def _clip_batch_item(item: dict, args: argparse.Namespace, config) -> dict:
         or ((drama.get("raw") or {}).get("third_serial_id") if isinstance(drama.get("raw"), dict) else "")
     ).strip()
     if not app_id or not third_serial_id:
-        raise RuntimeError("ai-cut 剪辑缺少 app_id 或 third_serial_id")
+        return with_stage_timings({**item, "status": "failed", "error": "ai-cut 剪辑缺少 app_id 或 third_serial_id"})
+    ai_cut_wait_started = time.perf_counter()
     try:
         task_create, task_id, task_body, serial_payload, chosen_segment, submit_attempt = (
             _submit_ai_cut_task_until_segment_ready(
@@ -2908,7 +3407,8 @@ def _clip_batch_item(item: dict, args: argparse.Namespace, config) -> dict:
             )
         )
     except AiCutTaskStillRunningError as exc:
-        return {
+        mark_stage("ai_cut_wait", ai_cut_wait_started)
+        return with_stage_timings({
             **item,
             "status": "processing",
             "error": str(exc),
@@ -2938,22 +3438,40 @@ def _clip_batch_item(item: dict, args: argparse.Namespace, config) -> dict:
                 "execution_provider": "ai_cut_animation",
                 "ai_animation_task_id": exc.task_id,
             },
-        }
+        })
+    except Exception as exc:
+        mark_stage("ai_cut_wait", ai_cut_wait_started)
+        return with_stage_timings({**item, "status": "failed", "error": str(exc)})
+    mark_stage("ai_cut_wait", ai_cut_wait_started)
     if not serial_payload:
-        raise RuntimeError(f"ai-cut 未返回 serial 结果: {third_serial_id}")
+        return with_stage_timings({**item, "status": "failed", "error": f"ai-cut 未返回 serial 结果: {third_serial_id}"})
     if not chosen_segment:
-        raise RuntimeError(describe_serial_failure(serial_payload))
+        return with_stage_timings({**item, "status": "failed", "error": describe_serial_failure(serial_payload)})
 
     safe_title = re.sub(r"[\\\\/:*?\"<>|]+", "_", str(drama.get("title") or serial_id)).strip() or serial_id
-    local_clip_path = download_segment_video(
-        str(chosen_segment.get("video_url") or ""),
-        output_path=output_dir / f"{safe_title}_E{episode_order:02d}_aicut.mp4",
-    )
-    publish_ready_file = _ensure_vertical_publish_file(
-        local_clip_path,
-        target_width=config.clip_target_width,
-        target_height=config.clip_target_height,
-    )
+    segment_download_started = time.perf_counter()
+    try:
+        local_clip_path = download_segment_video(
+            str(chosen_segment.get("video_url") or ""),
+            output_path=output_dir / f"{safe_title}_E{episode_order:02d}_aicut.mp4",
+        )
+    except Exception as exc:
+        mark_stage("segment_download", segment_download_started)
+        return with_stage_timings({**item, "status": "failed", "error": str(exc)})
+    mark_stage("segment_download", segment_download_started)
+    publish_prepare_started = time.perf_counter()
+    try:
+        publish_ready_file = _ensure_vertical_publish_file(
+            local_clip_path,
+            target_width=config.clip_target_width,
+            target_height=config.clip_target_height,
+        )
+        downloaded_metadata = _probe_video_safely(str(local_clip_path))
+        publish_ready_metadata = _probe_video_safely(str(publish_ready_file))
+    except Exception as exc:
+        mark_stage("publish_file_prepare", publish_prepare_started)
+        return with_stage_timings({**item, "status": "failed", "error": str(exc)})
+    mark_stage("publish_file_prepare", publish_prepare_started)
     clip_result = {
         "task": {
             "key": "ai_cut_animation",
@@ -3004,20 +3522,20 @@ def _clip_batch_item(item: dict, args: argparse.Namespace, config) -> dict:
         "manus_status": task_body.get("status"),
         "downloaded_file": str(local_clip_path),
         "publish_ready_file": str(publish_ready_file),
-        "downloaded_metadata": _probe_video_safely(str(local_clip_path)),
-        "publish_ready_metadata": _probe_video_safely(str(publish_ready_file)),
+        "downloaded_metadata": downloaded_metadata,
+        "publish_ready_metadata": publish_ready_metadata,
         "execution_provider": "ai_cut_animation",
         "ai_animation_task_id": task_id,
         "ai_animation_download_status": serial_payload.get("download_status"),
         "ai_animation_clip_status": ((serial_payload.get("clip") or {}).get("status") if isinstance(serial_payload.get("clip"), dict) else ""),
         "ai_animation_segment": chosen_segment,
     }
-    return {
+    return with_stage_timings({
         **item,
         "status": "clipped",
         "source": source_context,
         "clip": clip_result,
-    }
+    })
 
 
 def _promotion_caption(item: dict, platform: str) -> dict[str, str]:
@@ -3506,8 +4024,12 @@ def cmd_run_batch_drama(args) -> None:
     timings: dict[str, float] = {}
     config = load_config(args.config)
     ensure_runtime_dirs(config)
-    if getattr(args, "source_prepare_retry_count", None) is None:
-        args.source_prepare_retry_count = config.source_prepare_retry_count
+    if getattr(args, "timeout", None) is None:
+        args.timeout = config.clip_task_timeout
+    if getattr(args, "poll_interval", None) is None:
+        args.poll_interval = config.clip_poll_interval
+    if getattr(args, "episode_probe_retry_count", None) is None:
+        args.episode_probe_retry_count = config.episode_probe_retry_count
     if args.clip_concurrency is None:
         args.clip_concurrency = config.clip_execute_concurrency
     if args.publish_concurrency is None:
@@ -3566,17 +4088,47 @@ def cmd_run_batch_drama(args) -> None:
     )
     items = approved_items
     if not items:
-        raise SystemExit(
-            json.dumps(
-                {
-                    "status": "no_safe_batch_items",
-                    "message": "安全门槛拦截后没有可继续剪辑发布的短剧。",
-                    "safety_gate": safety_gate,
-                },
-                ensure_ascii=False,
-                indent=2,
+        no_items_status = "no_safe_batch_items"
+        no_items_message = "安全门槛拦截后没有可继续剪辑发布的短剧。"
+        if _tag_test_mode_enabled():
+            no_items_status = "no_tag_test_region_account"
+            selection_summary = plan.get("selection_summary") if isinstance(plan.get("selection_summary"), dict) else {}
+            allowed_regions = selection_summary.get("tag_test_allowed_regions") or []
+            account_region_counts = selection_summary.get("tag_test_account_region_counts") or {}
+            skip_reason_counts = selection_summary.get("skip_reason_counts") or {}
+            no_items_message = (
+                "打标测试线路当前没有同时满足“发布时间窗 + 剩余可用账号地区”的发布项；"
+                f"本轮剩余账号地区={account_region_counts}，可跑地区={allowed_regions}，"
+                f"跳过原因={skip_reason_counts}。"
             )
-        )
+        payload = {
+            "status": no_items_status,
+            "mode": "batch_drama",
+            "platform": plan["platform"],
+            "requested_count": args.count,
+            "message": no_items_message,
+            "items": [],
+            "publish_records": [],
+            "drama_platform_plan": plan.get("drama_platform_plan", []),
+            "episode_precheck": plan.get("episode_precheck", {}),
+            "safety_gate": safety_gate,
+            "strategy_memory": plan.get("strategy_memory", {}),
+            "skipped_preview": plan.get("skipped_preview", []),
+            "selection_summary": plan.get("selection_summary", {}),
+            "unique_playable_source_count": int(plan.get("unique_playable_source_count") or 0),
+            "source_reuse_fill_count": int(plan.get("source_reuse_fill_count") or 0),
+            "realtime_external_unique_count": int(plan.get("realtime_external_unique_count") or 0),
+            "realtime_external_slot_fill_count": int(plan.get("realtime_external_slot_fill_count") or 0),
+            "planned_shortfall_count": max(0, int(plan.get("planned_shortfall_count") or 0) + max(0, int(args.count) - len(items))),
+            "timings": timings,
+            "timing_zh": _format_timing_zh(timings),
+        }
+        payload["report_zh"] = _batch_report_zh(payload)
+        payload["user_summary_zh"] = _batch_user_summary_zh(payload["report_zh"])
+        _write_progress_snapshot(payload, stage=no_items_status, report_builder=_batch_report_zh)
+        payload = _finalize_payload(payload)
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
 
     if args.dry_run:
         payload = {

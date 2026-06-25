@@ -1,6 +1,5 @@
 import { LINE_ORDER, LINE_STRATEGIES } from "./state.js";
 import {
-  computeLineScore,
   esc,
   fmtDateTime,
   fmtNum,
@@ -12,11 +11,43 @@ import {
   rangeLabel,
   rewriteLineNames,
   statusLabel,
-  statusTone,
 } from "./utils.js";
 
+function currentDayKey() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function resolveLineRuntime(row) {
+  const rawState = String(row.runtime_state || "").trim();
+  const normalized = statusLabel(rawState);
+  const requested = Number(row.requested_count || 0);
+  const success = Number(row.success_count || 0);
+  const failed = Number(row.failed_count || 0);
+  const processing = Number(row.processing_count || 0);
+  const unsubmitted = Number(row.unsubmitted_count || 0);
+  const hasTodayRecords = requested > 0 || success > 0 || failed > 0 || processing > 0 || unsubmitted > 0;
+
+  if (["失败", "阻塞", "异常"].includes(normalized)) {
+    return { label: "异常", tone: "error" };
+  }
+  if (row.is_running) {
+    return { label: "运行中", tone: "running" };
+  }
+  if (processing > 0 || unsubmitted > 0 || ["等待上游", "已提交"].includes(normalized)) {
+    return { label: "等待结果", tone: "idle" };
+  }
+  if (["已完成", "正常"].includes(normalized) || hasTodayRecords) {
+    return { label: "已完成", tone: "done" };
+  }
+  return { label: "未启动", tone: "idle" };
+}
+
 export function buildIssueMap(overview, failures) {
-  const todayKey = overview?.overall_summary?.summary_day_key || "";
+  const todayKey = currentDayKey();
   const recentFailed = failures?.recent_failed || [];
   const issueMap = new Map();
 
@@ -68,10 +99,9 @@ export function renderLineCards(overview, failures) {
   }
 
   container.innerHTML = rows.map((row) => {
-    const score = computeLineScore(row);
     const progressPct = Math.max(0, Math.min(100, Number(row.progress_pct || 0)));
     const stabilityPct = Math.max(0, Math.min(100, Number(row.stability_pct || 0)));
-    const statusText = row.is_running ? "运行中" : statusLabel(row.runtime_state);
+    const runtime = resolveLineRuntime(row);
     const remaining = Math.max(0, Number(row.target_total || 0) - Number(row.success_count || 0));
     const issues = issueMap.get(row.line_name) || [];
     const strategyText = String(LINE_STRATEGIES[row.line_name] || row.pool_key || "-");
@@ -84,22 +114,32 @@ export function renderLineCards(overview, failures) {
         if (!rest.length) {
           return `<div class="strategy-row"><span class="strategy-v">${esc(line)}</span></div>`;
         }
+        const shortLabel = ({
+          选素材: "选",
+          如何剪辑: "剪",
+          如何发布: "发",
+        })[String(label).trim()] || String(label).trim();
         return `
           <div class="strategy-row">
-            <span class="strategy-k">${esc(label)}：</span>
+            <span class="strategy-k">${esc(shortLabel)}：</span>
             <span class="strategy-v">${esc(rest.join("："))}</span>
           </div>
         `;
       })
       .join("");
     const issueHtml = issues.length
-      ? `<div class="issue-list">${issues.slice(0, 3).map((item) => `
+      ? `
+        <div class="issue-summary">
+          <strong>今天主要问题：</strong>${esc(issues[0].text)}${issues[0].count > 1 ? `（${fmtNum(issues[0].count)}次）` : ""}
+        </div>
+        <div class="issue-list">${issues.slice(0, 3).map((item) => `
           <div class="issue-item">
             <span class="issue-time">${esc(item.timeText)}</span>
             <span class="issue-text">${esc(item.text)}${item.count > 1 ? `（${fmtNum(item.count)}次）` : ""}</span>
           </div>
-        `).join("")}</div>`
-      : `<div class="line-block-text">今天暂时没有明确问题，先继续看实时状态。</div>`;
+        `).join("")}</div>
+      `
+      : `<div class="line-block-text">今天还没有记录到明确问题，过了 00:00 会按新的一天重新统计。</div>`;
 
     return `
       <article class="line-card">
@@ -107,17 +147,13 @@ export function renderLineCards(overview, failures) {
           <div>
             <div class="line-title-row">
               <h3>${esc(lineLabel(row.line_name) || rewriteLineNames(row.display_name) || "-")}</h3>
-              <span class="status-pill ${esc(statusTone(row.is_running ? "processing" : row.runtime_state))}">${esc(statusText)}</span>
+              <span class="status-pill ${esc(runtime.tone)}">${esc(runtime.label)}</span>
             </div>
             <div class="line-meta-pills">
               <span class="meta-chip">测试时间范围 ${esc(rangeLabel(row.line_name))}</span>
               <span class="meta-chip">账号数量 ${fmtNum(row.pool_size)} 个</span>
               <span class="meta-chip">最近一轮时间 ${esc(fmtDateTime(row.last_update))}</span>
             </div>
-          </div>
-          <div class="score-box">
-            <strong>${esc(score.text)}</strong>
-            <span>${esc(score.grade)}</span>
           </div>
         </div>
 

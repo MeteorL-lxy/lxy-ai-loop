@@ -64,7 +64,7 @@ RANKED_PLATFORM_MAP = {
     "INSTAGRAM": "instagram",
     "YOUTUBE": "youtube",
 }
-_ANCHOR_CACHE: dict[tuple[str, str, str], dict[str, Any] | None] = {}
+_ANCHOR_CANDIDATE_CACHE: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
 _REALTIME_EXTERNAL_LOOKUP_FAIL_LIMIT = 3
 ROOT_DIR = Path(__file__).resolve().parents[3]
 REALTIME_CACHE_DIR = Path(
@@ -90,6 +90,109 @@ REALTIME_RANK_LINES = {"realtime", "realtime_day", "realtime_single"}
 GUANGDADA_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 _GUANGDADA_CALL_COUNT_LOCK = Lock()
 _GUANGDADA_CALL_COUNTS: dict[tuple[str, str], int] = {}
+
+
+def _anchor_usage_state_path() -> Path:
+    raw = str(os.getenv("BARRY_REALTIME_ANCHOR_USAGE_STATE_FILE") or "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    state_root = str(os.getenv("BARRY_LOOP_STATE_ROOT") or "").strip()
+    base = Path(state_root).expanduser().resolve() if state_root else (ROOT_DIR / "runtime" / "continuous-loop")
+    return (base / "_shared" / "realtime_anchor_usage.json").resolve()
+
+
+def _anchor_cooldown_days() -> int:
+    raw = os.getenv("BARRY_REALTIME_ANCHOR_COOLDOWN_DAYS")
+    try:
+        value = int(raw) if raw is not None and str(raw).strip() != "" else 7
+    except (TypeError, ValueError):
+        value = 7
+    return max(1, value)
+
+
+def _anchor_allow_cooldown_fallback() -> bool:
+    raw = str(os.getenv("BARRY_REALTIME_ANCHOR_ALLOW_COOLDOWN_FALLBACK") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _load_anchor_usage_state() -> dict[str, Any]:
+    path = _anchor_usage_state_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    anchors = payload.get("anchors")
+    if not isinstance(anchors, dict):
+        anchors = {}
+    payload["anchors"] = anchors
+    return payload
+
+
+def _save_anchor_usage_state(payload: dict[str, Any]) -> None:
+    normalized = {
+        "cooldown_days": _anchor_cooldown_days(),
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "anchors": payload.get("anchors") if isinstance(payload.get("anchors"), dict) else {},
+    }
+    _atomic_write_json(_anchor_usage_state_path(), normalized)
+
+
+def _parse_anchor_used_at(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(text[:10], "%Y-%m-%d")
+    except ValueError:
+        pass
+    return None
+
+
+def _anchor_record(state: dict[str, Any], task_id: str) -> dict[str, Any]:
+    anchors = state.get("anchors") if isinstance(state.get("anchors"), dict) else {}
+    item = anchors.get(str(task_id or "").strip())
+    return item if isinstance(item, dict) else {}
+
+
+def _anchor_usage_count(state: dict[str, Any], task_id: str) -> int:
+    item = _anchor_record(state, task_id)
+    try:
+        return max(0, int(item.get("count") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _anchor_days_since_used(state: dict[str, Any], task_id: str) -> float:
+    used_at = _parse_anchor_used_at(_anchor_record(state, task_id).get("last_used_at"))
+    if used_at is None:
+        return 10_000.0
+    return max(0.0, (datetime.now() - used_at).total_seconds() / 86400.0)
+
+
+def _anchor_in_cooldown(state: dict[str, Any], task_id: str) -> bool:
+    return _anchor_days_since_used(state, task_id) < float(_anchor_cooldown_days())
+
+
+def _record_anchor_usage(state: dict[str, Any], anchor: dict[str, Any], *, app_id: str, publish_platform: str) -> None:
+    task_id = str((anchor or {}).get("task_id") or "").strip()
+    if not task_id:
+        return
+    anchors = state.setdefault("anchors", {})
+    item = anchors.get(task_id)
+    if not isinstance(item, dict):
+        item = {}
+    item["count"] = _anchor_usage_count(state, task_id) + 1
+    item["app_id"] = str(app_id or (anchor or {}).get("app_id") or "").strip()
+    item["publish_platform"] = str(publish_platform or "").strip().upper()
+    item["title"] = str((anchor or {}).get("title") or "").strip()
+    item["last_used_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    anchors[task_id] = item
 
 
 def _priority_boost_env(name: str, default: float) -> float:
@@ -127,7 +230,11 @@ def fetch_realtime_rank_candidates(
                 return []
             cached = cached_payload.get("candidates")
             if isinstance(cached, list):
-                return cached[: max(0, int(target_size or 0)) or len(cached)]
+                selected = cached[: max(0, int(target_size or 0)) or len(cached)]
+                return _refresh_external_anchor_candidates(
+                    [dict(item) for item in selected if isinstance(item, dict)],
+                    publish_platform=_preferred_publish_platform(target_publish_platforms),
+                )
     try:
         records = _load_or_fetch_realtime_hour_records(
             config,
@@ -277,18 +384,22 @@ def _try_build_external_candidates(
         return []
     if not external_assets:
         return []
-    anchor = _find_anchor_drama(
-        inferred_app_id,
-        publish_platform=publish_platform,
-        preferred_language=str((official_match or {}).get("language") or "").strip(),
-    )
-    if not anchor:
-        return []
     candidates: list[dict[str, Any]] = []
     for external_asset in external_assets:
         video_url = str(external_asset.get("video_url") or "").strip()
         if not video_url:
             continue
+        matched_task_id = str((official_match or {}).get("task_id") or "").strip()
+        if matched_task_id:
+            anchor = {}
+        else:
+            anchor = _find_anchor_drama(
+                inferred_app_id,
+                publish_platform=publish_platform,
+                preferred_language=str((official_match or {}).get("language") or "").strip(),
+            )
+            if not anchor:
+                continue
         candidate = _build_external_candidate(
             record,
             inferred_app_id,
@@ -849,16 +960,29 @@ def _preferred_publish_platform(target_publish_platforms: list[str]) -> str:
     return "FACEBOOK"
 
 
-def _find_anchor_drama(app_id: str, *, publish_platform: str, preferred_language: str = "") -> dict[str, Any] | None:
-    cache_key = (str(app_id or "").strip(), str(publish_platform or "").strip().upper(), str(preferred_language or "").strip())
-    if cache_key in _ANCHOR_CACHE:
-        return _ANCHOR_CACHE[cache_key]
+def _anchor_candidates_page_size() -> int:
+    raw = os.getenv("BARRY_REALTIME_ANCHOR_CANDIDATE_PAGE_SIZE")
+    try:
+        value = int(raw) if raw is not None and str(raw).strip() != "" else 100
+    except (TypeError, ValueError):
+        value = 100
+    return max(20, min(value, 500))
 
+
+def _fetch_anchor_candidates(app_id: str, *, publish_platform: str, preferred_language: str = "") -> list[dict[str, Any]]:
+    cache_key = (str(app_id or "").strip(), str(publish_platform or "").strip().upper(), str(preferred_language or "").strip())
+    if cache_key in _ANCHOR_CANDIDATE_CACHE:
+        return [dict(item) for item in _ANCHOR_CANDIDATE_CACHE[cache_key]]
+
+    anchors: list[dict[str, Any]] = []
+    seen_task_ids: set[str] = set()
     for language in [preferred_language, ""]:
+        if language is None:
+            language = ""
         body = require_success(
             get_tasks(
                 page=1,
-                page_size=20,
+                page_size=_anchor_candidates_page_size(),
                 platform=app_id,
                 language=language,
                 search="",
@@ -876,18 +1000,65 @@ def _find_anchor_drama(app_id: str, *, publish_platform: str, preferred_language
                 continue
             if not str(row.get("task_id") or "").strip():
                 continue
+            task_id = str(row.get("task_id") or "").strip()
+            if task_id in seen_task_ids:
+                continue
+            seen_task_ids.add(task_id)
             anchor = {
-                "task_id": str(row.get("task_id") or "").strip(),
+                "task_id": task_id,
                 "serial_id": str(row.get("serial_id") or "").strip(),
                 "app_id": row_app_id or app_id,
                 "task_type": str(row.get("task_type") or "1").strip() or "1",
                 "title": str(row.get("title") or "").strip(),
                 "language": str(row.get("language") or "").strip(),
             }
-            _ANCHOR_CACHE[cache_key] = anchor
-            return anchor
-    _ANCHOR_CACHE[cache_key] = None
-    return None
+            anchors.append(anchor)
+    _ANCHOR_CANDIDATE_CACHE[cache_key] = [dict(item) for item in anchors]
+    return anchors
+
+
+def _find_anchor_drama(app_id: str, *, publish_platform: str, preferred_language: str = "") -> dict[str, Any] | None:
+    normalized_app_id = str(app_id or "").strip()
+    if not normalized_app_id:
+        return None
+    candidates = _fetch_anchor_candidates(
+        normalized_app_id,
+        publish_platform=publish_platform,
+        preferred_language=preferred_language,
+    )
+    if not candidates:
+        return None
+
+    state = _load_anchor_usage_state()
+    eligible = [
+        dict(item)
+        for item in candidates
+        if not _anchor_in_cooldown(state, str(item.get("task_id") or "").strip())
+    ]
+    if not eligible:
+        if not _anchor_allow_cooldown_fallback():
+            _log_realtime_skip(
+                f"实时榜外部素材 {normalized_app_id} 无可用推广锚点："
+                f"候选 {len(candidates)} 个均在 {_anchor_cooldown_days()} 天冷却内，已跳过。"
+            )
+            return None
+        eligible = [dict(item) for item in candidates]
+        _log_realtime_skip(
+            f"实时榜外部素材 {normalized_app_id} 推广锚点均在冷却内，"
+            f"因 BARRY_REALTIME_ANCHOR_ALLOW_COOLDOWN_FALLBACK 开启，使用最久未用锚点兜底。"
+        )
+
+    eligible.sort(
+        key=lambda item: (
+            _anchor_usage_count(state, str(item.get("task_id") or "").strip()),
+            -_anchor_days_since_used(state, str(item.get("task_id") or "").strip()),
+            str(item.get("task_id") or ""),
+        )
+    )
+    selected = dict(eligible[0])
+    _record_anchor_usage(state, selected, app_id=normalized_app_id, publish_platform=publish_platform)
+    _save_anchor_usage_state(state)
+    return selected
 
 
 def _base_realtime_fields(record: dict[str, Any]) -> dict[str, Any]:
@@ -971,6 +1142,34 @@ def _build_external_candidate(
     }
     candidate.update(_base_realtime_fields(record))
     return candidate
+
+
+def _refresh_external_anchor_candidates(candidates: list[dict[str, Any]], *, publish_platform: str) -> list[dict[str, Any]]:
+    refreshed: list[dict[str, Any]] = []
+    for candidate in candidates:
+        item = dict(candidate)
+        if str(item.get("candidate_fetch_source") or "") != "realtime_rank_external":
+            refreshed.append(item)
+            continue
+        if str(item.get("matched_official_task_id") or "").strip():
+            refreshed.append(item)
+            continue
+        app_id = str(item.get("app_id") or "").strip()
+        if not app_id:
+            continue
+        anchor = _find_anchor_drama(
+            app_id,
+            publish_platform=publish_platform,
+            preferred_language=str(item.get("language") or "").strip(),
+        )
+        if not anchor:
+            continue
+        item["task_id"] = str(anchor.get("task_id") or "").strip()
+        item["task_type"] = str(anchor.get("task_type") or "1").strip() or "1"
+        item["language"] = str(anchor.get("language") or item.get("language") or "").strip()
+        item["promotion_anchor"] = dict(anchor)
+        refreshed.append(item)
+    return refreshed
 
 
 def fetch_creative_list_candidates(

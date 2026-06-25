@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -18,6 +19,7 @@ from flywheel.daily_loop_targets import get_pool_target_status, select_balanced_
 
 LINE_GUARD_STATE_FILE = ".line_guard_state.json"
 WINDOW_PAUSED_EXIT_CODE = 75
+ORDINARY_ROUND_TIMEOUT_EXIT_CODE = 124
 VIDEO_ISSUE_FAILURE_PATTERNS = (
     "分辨率错误",
     "分辨率不符合要求",
@@ -72,6 +74,10 @@ def _window_contains(window: str, minute: int | None = None) -> bool:
     raw = str(window or "").strip()
     if not raw:
         return True
+    if "," in raw:
+        parts = [part.strip() for part in raw.split(",") if part.strip()]
+        if parts:
+            return any(_window_contains(part, minute=minute) for part in parts)
     try:
         start, end = _parse_window(raw)
     except Exception:
@@ -83,6 +89,59 @@ def _window_contains(window: str, minute: int | None = None) -> bool:
     if start < end:
         return start <= current < end
     return current >= start or current < end
+
+
+def _seconds_until_window_open(window: str, minute: int | None = None) -> int | None:
+    raw = str(window or "").strip()
+    if not raw:
+        return 0
+    if "," in raw:
+        waits = [
+            item
+            for part in raw.split(",")
+            for item in [_seconds_until_window_open(part.strip(), minute=minute)]
+            if item is not None
+        ]
+        return min(waits) if waits else None
+    try:
+        start, end = _parse_window(raw)
+    except Exception:
+        return 0
+    current = _current_minute() if minute is None else int(minute)
+    if start == end or _window_contains(raw, minute=current):
+        return 0
+    if current < start:
+        return (start - current) * 60
+    return ((24 * 60 - current) + start) * 60
+
+
+def _tag_test_region_wait_seconds(json_path: Path) -> int:
+    default_sleep = max(600, _env_int("BARRY_LOOP_TAG_TEST_REGION_WAIT_SECONDS", 600))
+    payload = _load_json_dict(json_path)
+    if str(payload.get("status") or "").strip() != "no_tag_test_region_account":
+        return 0
+    selection = payload.get("selection_summary") if isinstance(payload.get("selection_summary"), dict) else {}
+    allowed_regions = [
+        str(item or "").strip()
+        for item in (selection.get("tag_test_allowed_regions") if isinstance(selection.get("tag_test_allowed_regions"), list) else [])
+        if str(item or "").strip()
+    ]
+    windows = selection.get("tag_test_region_windows") if isinstance(selection.get("tag_test_region_windows"), dict) else {}
+    waits: list[int] = []
+    for region in allowed_regions:
+        region_windows = windows.get(region)
+        if not isinstance(region_windows, list):
+            continue
+        for window in region_windows:
+            wait_seconds = _seconds_until_window_open(str(window or "").strip())
+            if wait_seconds is not None:
+                waits.append(max(0, int(wait_seconds)))
+    if not waits:
+        return default_sleep
+    wait = min(waits)
+    if wait <= 0:
+        return default_sleep
+    return max(default_sleep, wait)
 
 
 def _read_log_tail_from_offset(log_path: Path, start_offset: int) -> str:
@@ -144,6 +203,106 @@ def _write_material_unavailable_round_json(
         },
     }
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _ordinary_round_timeout_seconds(line_name: str) -> int:
+    normalized = str(line_name or "").strip().lower()
+    if normalized != "ordinary":
+        return 0
+    return max(0, _env_int("BARRY_LOOP_ORDINARY_ROUND_TIMEOUT_SECONDS", 3600))
+
+
+def _terminate_process_tree(proc: subprocess.Popen, *, grace_seconds: int = 20) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except Exception:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=max(1, int(grace_seconds or 1)))
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        pass
+
+
+def _write_round_timeout_skipped_json(
+    *,
+    json_path: Path,
+    line_name: str,
+    round_name: str,
+    requested_count: int,
+    timeout_seconds: int,
+    message: str,
+) -> None:
+    requested = max(0, int(requested_count or 0))
+    payload = {
+        "status": "ordinary_round_timeout_skipped",
+        "mode": "continuous",
+        "platform": "FACEBOOK",
+        "line_name": line_name,
+        "round_name": round_name,
+        "requested_count": requested,
+        "message": str(message or "").strip(),
+        "timeout_seconds": max(0, int(timeout_seconds or 0)),
+        "items": [],
+        "publish_records": [],
+        "report_zh": {
+            "请求数量": requested,
+            "计划数量": requested,
+            "发布成功数": 0,
+            "失败数": 0,
+            "发布处理中数": 0,
+            "未提交数": requested,
+            "跳过原因": str(message or "").strip(),
+        },
+    }
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _run_round_command(
+    *,
+    cmd: list[str],
+    log_path: Path,
+    json_path: Path,
+    timeout_seconds: int,
+) -> tuple[int, bool, int]:
+    with log_path.open("a", encoding="utf-8") as log_handle, json_path.open("w", encoding="utf-8") as json_handle:
+        log_handle.write(f"\n[{datetime.now().strftime('%F %T')}] $ {' '.join(cmd)}\n")
+        log_handle.flush()
+        log_offset = log_handle.tell()
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(ROOT_DIR),
+            text=True,
+            stdout=json_handle,
+            stderr=log_handle,
+            start_new_session=True,
+        )
+        try:
+            proc.wait(timeout=max(1, int(timeout_seconds))) if timeout_seconds > 0 else proc.wait()
+            return int(proc.returncode or 0), False, log_offset
+        except subprocess.TimeoutExpired:
+            log_handle.write(
+                f"\n[{datetime.now().strftime('%F %T')}] round command timeout after {timeout_seconds}s; terminate process group pid={proc.pid}\n"
+            )
+            log_handle.flush()
+            _terminate_process_tree(proc)
+            return ORDINARY_ROUND_TIMEOUT_EXIT_CODE, True, log_offset
 
 
 def _is_realtime_rank_line(line_name: str) -> bool:
@@ -554,6 +713,18 @@ def _write_summary(
             requested = max(requested, requested_arg)
             planned = max(planned, requested_arg)
             unsubmitted = max(unsubmitted, requested_arg)
+        elif payload_status == "ordinary_round_timeout_skipped":
+            status = "blocked"
+            status_label = "本轮跳过"
+            requested = max(requested, requested_arg)
+            planned = max(planned, requested_arg)
+            unsubmitted = max(unsubmitted, requested_arg)
+        elif payload_status == "no_tag_test_region_account":
+            status = "blocked"
+            status_label = "等待地区账号"
+            requested = max(requested, requested_arg)
+            planned = max(planned, requested_arg)
+            unsubmitted = max(unsubmitted, requested_arg)
         else:
             status = "error"
             status_label = "异常结束"
@@ -761,21 +932,27 @@ def main() -> int:
             f"实时榜={'开启' if realtime_enabled == '1' else '关闭'}，"
             f"素材直驱={'开启' if realtime_material_only == '1' else '关闭'}，"
             f"创意列表直驱={'开启' if creative_list_material_only == '1' else '关闭'}，"
-            f"官方切片={'FFmpeg' if line_name in {'fbhot_test', 'yourchannel', 'recent_order', 'stardusttv'} else '默认'}。"
+            f"官方切片={'FFmpeg' if line_name in {'fbhot_test', 'yourchannel', 'recent_order', 'stardusttv', 'tag_test'} else '默认'}。"
         )
-        with log_path.open("a", encoding="utf-8") as log_handle, json_path.open("w", encoding="utf-8") as json_handle:
-            log_handle.write(f"\n[{datetime.now().strftime('%F %T')}] $ {' '.join(cmd)}\n")
-            log_handle.flush()
-            log_offset = log_handle.tell()
-            proc = subprocess.run(
-                cmd,
-                cwd=str(ROOT_DIR),
-                text=True,
-                stdout=json_handle,
-                stderr=log_handle,
-                check=False,
-            )
+        ordinary_round_timeout = _ordinary_round_timeout_seconds(line_name)
+        proc_returncode, round_timed_out, log_offset = _run_round_command(
+            cmd=cmd,
+            log_path=log_path,
+            json_path=json_path,
+            timeout_seconds=ordinary_round_timeout,
+        )
         log_text = _read_log_tail_from_offset(log_path, log_offset)
+        if round_timed_out and not _json_file_has_payload(json_path):
+            message = f"ordinary 单轮运行超过 {ordinary_round_timeout}s，判定严重卡死，已终止本轮并跳过。"
+            _write_round_timeout_skipped_json(
+                json_path=json_path,
+                line_name=line_name,
+                round_name=round_name,
+                requested_count=requested,
+                timeout_seconds=ordinary_round_timeout,
+                message=message,
+            )
+            _log(f"{label} {message}")
         realtime_no_material = (
             _is_realtime_rank_line(line_name)
             and realtime_no_material_sleep > 0
@@ -803,8 +980,8 @@ def main() -> int:
                 status="no_creative_list_material",
                 message="创意列表当前未命中可下载外部素材；整轮剧场已完成扫描，不回退到官方选剧逻辑。",
             )
-        if proc.returncode != 0:
-            _log(f"{label} 命令返回非零（rc={proc.returncode}），继续按结果文件汇总。")
+        if proc_returncode != 0:
+            _log(f"{label} 命令返回非零（rc={proc_returncode}），继续按结果文件汇总。")
         if _recover_json_from_progress(
             json_path=json_path,
             progress_path=progress_path,
@@ -835,6 +1012,14 @@ def main() -> int:
             json_path=json_path,
             threshold=video_issue_stop_threshold,
         )
+        tag_test_region_wait_seconds = _tag_test_region_wait_seconds(json_path)
+        if tag_test_region_wait_seconds > 0:
+            _log(
+                f"{label} 当前没有匹配的同地区发布时间窗，等待 {tag_test_region_wait_seconds}s 后再检查，"
+                "避免空轮次刷屏。"
+            )
+            time.sleep(max(5, tag_test_region_wait_seconds))
+            continue
         if realtime_no_material:
             _log(
                 f"{label} 未拿到可用实时榜素材：等待 {realtime_no_material_sleep}s 后再拉取下一轮，不重置账号达标标签。"

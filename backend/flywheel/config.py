@@ -137,8 +137,8 @@ class FlywheelConfig:
         return list(self.raw["clipping"]["dedup_pool"])
 
     @property
-    def source_prepare_retry_count(self) -> int:
-        return max(0, int(self.raw["clipping"].get("source_prepare_retry_count", 0)))
+    def episode_probe_retry_count(self) -> int:
+        return max(0, int(self.raw["clipping"].get("episode_probe_retry_count", 0)))
 
     @property
     def clip_submit_timeout(self) -> int:

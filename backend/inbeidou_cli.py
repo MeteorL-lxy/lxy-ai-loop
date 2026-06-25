@@ -2147,140 +2147,6 @@ def describe_episode_rows(rows):
         )
 
 
-def poll_sketch_upload(serial_id, episode_order, app_id, timeout=300, poll_interval=DEFAULT_POLL_INTERVAL):
-    deadline = time.time() + timeout
-    last_rows = []
-    while True:
-        body = require_success(
-            sketch_upload(serial_id=serial_id, episode_orders=[episode_order], app_id=app_id),
-            "上传短剧集数素材",
-        )
-        rows = body if isinstance(body, list) else []
-        last_rows = rows
-        ready_rows = []
-        for row in rows:
-            status = str(row.get("status") or "").lower()
-            if status in {"error", "failed"}:
-                raise InbeidouError(f"短剧素材处理失败: {json.dumps(row, ensure_ascii=False)}")
-            if row.get("id") and status in {"", "success", "done", "finished"}:
-                ready_rows.append(row)
-        if rows and len(ready_rows) == len(rows):
-            return ready_rows
-        if time.time() >= deadline:
-            raise InbeidouError(f"等待短剧素材就绪超时: {json.dumps(last_rows, ensure_ascii=False)}")
-        time.sleep(poll_interval)
-
-
-def _is_retryable_source_prepare_error(exc: Exception) -> bool:
-    message = str(exc or "").strip().lower()
-    if not message:
-        return False
-    retryable_patterns = [
-        "等待短剧素材就绪超时",
-        "等待 window_id 超时",
-        "ssl",
-        "connection reset",
-        "connection aborted",
-        "connection refused",
-        "timed out",
-        "read timed out",
-        "remote end closed connection",
-        "temporarily unavailable",
-        "请求失败:",
-    ]
-    return any(pattern in message for pattern in retryable_patterns)
-
-
-def _source_prepare_retry_sleep(attempt: int) -> None:
-    if attempt <= 0:
-        return
-    if attempt == 1:
-        delay = 3
-    elif attempt == 2:
-        delay = 8
-    else:
-        delay = 15
-    time.sleep(delay)
-
-
-def resolve_drama_episode_context(args):
-    episode_order = getattr(args, "episode_order", None)
-    if episode_order is None:
-        raise InbeidouError("缺少剧集参数，请传 --episode-order")
-
-    locator = resolve_drama_locator(args, require_app=True)
-    upload_timeout = getattr(args, "upload_timeout", 300)
-    poll_interval = getattr(args, "poll_interval", DEFAULT_POLL_INTERVAL)
-    retry_count = max(0, int(getattr(args, "source_prepare_retry_count", 0) or 0))
-    persist_state = bool(getattr(args, "persist_state", True))
-    last_error: Optional[Exception] = None
-
-    for attempt in range(1, retry_count + 2):
-        try:
-            episode_rows = require_success(
-                get_episode_list(serial_id=locator["serial_id"]),
-                "获取短剧剧集列表",
-            )
-            episode_meta = next(
-                (
-                    item
-                    for item in (episode_rows if isinstance(episode_rows, list) else [])
-                    if int(item.get("episode_id") or item.get("episode_order") or item.get("sequence") or 0) == int(episode_order)
-                ),
-                {},
-            )
-            sketch_rows = poll_sketch_upload(
-                serial_id=locator["serial_id"],
-                episode_order=episode_order,
-                app_id=locator["app_id"],
-                timeout=upload_timeout,
-                poll_interval=poll_interval,
-            )
-            first_row = sketch_rows[0]
-            upload_id = first_row.get("id")
-            if not upload_id:
-                raise InbeidouError(f"短剧素材返回缺少 upload_id: {json.dumps(first_row, ensure_ascii=False)}")
-
-            window_body = ensure_upload_window(
-                upload_id,
-                timeout=upload_timeout,
-                poll_interval=poll_interval,
-            )
-            context = {
-                "source_type": "drama_episode",
-                "task_id": locator.get("task_id"),
-                "task_type": locator.get("task_type"),
-                "title": locator.get("title"),
-                "serial_id": int(locator["serial_id"]),
-                "app_id": str(locator["app_id"]),
-                "episode_order": int(episode_order),
-                "episode_id": first_row.get("episode_id") or episode_meta.get("episode_id"),
-                "target_id": first_row.get("target_id"),
-                "upload_id": int(upload_id),
-                "window_id": int(window_body.get("window_id")),
-                "window_status": window_body.get("status"),
-                "agent_id": window_body.get("agent_id"),
-                "manus_id": window_body.get("manus_id"),
-                "manus_status": window_body.get("manus_status"),
-                "media_url": first_row.get("play_url") or episode_meta.get("play_url") or "",
-                "filename": f"{locator.get('title') or 'drama'}-E{int(episode_order):02d}",
-            }
-            if persist_state:
-                save_state(context)
-            return context
-        except InbeidouError as exc:
-            last_error = exc
-            if attempt > retry_count or not _is_retryable_source_prepare_error(exc):
-                break
-            _source_prepare_retry_sleep(attempt)
-
-    if last_error is None:
-        raise InbeidouError("短剧素材准备失败，未知错误")
-    if retry_count > 0 and _is_retryable_source_prepare_error(last_error):
-        raise InbeidouError(f"{last_error}（素材阶段已重试 {retry_count} 次）")
-    raise last_error
-
-
 def build_promotion_link_entry(platform_id, payload):
     codes = payload.get("codes", []) if isinstance(payload.get("codes"), list) else []
     return {
@@ -2794,7 +2660,10 @@ def resolve_media_context(args):
         or getattr(args, "task_id", None)
         or getattr(args, "search", None)
     ):
-        return resolve_drama_episode_context(args)
+        raise InbeidouError(
+            "旧北斗素材窗口链路已淘汰：不再支持通过短剧剧集参数准备 upload/window。"
+            "短剧线路请走 ai-cut 或 ffmpeg loop；手动剪辑请传 --file 或已存在的 --upload-id/--window-id。"
+        )
 
     state = load_state()
     upload_id = getattr(args, "upload_id", None) or state.get("upload_id")
@@ -4790,17 +4659,10 @@ def cmd_episodes(args):
         describe_episode_rows(rows)
         return
 
-    context = resolve_drama_episode_context(args)
-    if getattr(args, "json", False):
-        pretty_print_json(context)
-        return
-    print("\n✅ 短剧剧集素材已就绪")
-    print("=" * 80)
-    print(f"   标题: {context.get('title') or 'N/A'}")
-    print(f"   第 {context.get('episode_order')} 集")
-    print(f"   upload_id: {context.get('upload_id')}")
-    print(f"   window_id: {context.get('window_id')}")
-    print(f"   media_url: {context.get('media_url') or 'N/A'}")
+    raise InbeidouError(
+        "episodes fetch 依赖的旧北斗素材窗口链路已淘汰。"
+        "短剧线路请使用 ai-cut 或 ffmpeg loop；如需查看剧集信息，请使用 episodes list。"
+    )
 
 
 def cmd_uploads(args):
@@ -5055,8 +4917,8 @@ def build_parser():
   python3 inbeidou_cli.py uploads upload --file /path/to/video.mp4
   python3 inbeidou_cli.py analyze run --file /path/to/video.mp4
   python3 inbeidou_cli.py clip create --file /path/to/video.mp4 --wait
-  python3 inbeidou_cli.py episodes fetch --task-id 123 --episode-order 1
-  python3 inbeidou_cli.py clip create --search "Scandalous" --episode-order 1 --wait
+  python3 inbeidou_cli.py episodes list --task-id 123
+  python3 inbeidou_cli.py clip create --file /path/to/video.mp4 --wait
   python3 inbeidou_cli.py novels random --json
   python3 inbeidou_cli.py novels pipeline --execute --json
   python3 inbeidou_cli.py translate create --upload-id 69458 --lang en --wait

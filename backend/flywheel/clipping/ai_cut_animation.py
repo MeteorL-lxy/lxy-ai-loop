@@ -44,7 +44,7 @@ DEFAULT_MAX_EPISODES_PER_SERIAL = max(
 DEFAULT_SOURCE = str(os.getenv("BARRY_AI_ANIMATION_SOURCE", "auto_clip") or "auto_clip").strip() or "auto_clip"
 DEFAULT_REQUEST_TIMEOUT = max(10, int(os.getenv("BARRY_AI_ANIMATION_REQUEST_TIMEOUT", "60") or 60))
 DEFAULT_DOWNLOAD_TIMEOUT = max(30, int(os.getenv("BARRY_AI_ANIMATION_DOWNLOAD_TIMEOUT", "120") or 120))
-DEFAULT_MIN_TASK_TIMEOUT = max(1800, int(os.getenv("BARRY_AI_ANIMATION_MIN_TASK_TIMEOUT", "3600") or 3600))
+DEFAULT_MIN_TASK_TIMEOUT = max(0, int(os.getenv("BARRY_AI_ANIMATION_MIN_TASK_TIMEOUT", "0") or 0))
 
 
 def _env_flag(name: str, default: bool) -> bool:

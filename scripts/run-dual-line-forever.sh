@@ -35,6 +35,7 @@ export BARRY_LOOP_REALTIME_MATERIAL_ONLY="${BARRY_LOOP_REALTIME_MATERIAL_ONLY:-1
 export BARRY_LOOP_ORDINARY_ACCOUNT_POOL="${BARRY_LOOP_ORDINARY_ACCOUNT_POOL:-facebook_drama_ordinary_pool}"
 export BARRY_LOOP_ORDINARY_ENABLED="${BARRY_LOOP_ORDINARY_ENABLED:-1}"
 export BARRY_LOOP_ORDINARY_COUNT="${BARRY_LOOP_ORDINARY_COUNT:-0}"
+export BARRY_LOOP_ORDINARY_ROUND_TIMEOUT_SECONDS="${BARRY_LOOP_ORDINARY_ROUND_TIMEOUT_SECONDS:-3600}"
 export BARRY_LOOP_FBHOT_TEST_ACCOUNT_POOL="${BARRY_LOOP_FBHOT_TEST_ACCOUNT_POOL:-facebook_drama_fbhot_test_pool}"
 export BARRY_LOOP_FBHOT_TEST_ENABLED="${BARRY_LOOP_FBHOT_TEST_ENABLED:-1}"
 export BARRY_LOOP_FBHOT_TEST_COUNT="${BARRY_LOOP_FBHOT_TEST_COUNT:-0}"
@@ -75,6 +76,15 @@ export BARRY_LOOP_STARDUSTTV_ENABLED="${BARRY_LOOP_STARDUSTTV_ENABLED:-1}"
 export BARRY_LOOP_STARDUSTTV_ACCOUNT_POOL="${BARRY_LOOP_STARDUSTTV_ACCOUNT_POOL:-facebook_drama_stardusttv_pool}"
 export BARRY_LOOP_STARDUSTTV_COUNT="${BARRY_LOOP_STARDUSTTV_COUNT:-0}"
 export BARRY_LOOP_STARDUSTTV_FLYWHEEL_CONFIG="${BARRY_LOOP_STARDUSTTV_FLYWHEEL_CONFIG:-conf/flywheel_stardusttv.yaml}"
+export BARRY_LOOP_TAG_TEST_ENABLED="${BARRY_LOOP_TAG_TEST_ENABLED:-0}"
+export BARRY_LOOP_TAG_TEST_ACCOUNT_POOL="${BARRY_LOOP_TAG_TEST_ACCOUNT_POOL:-facebook_drama_tag_test_pool}"
+export BARRY_LOOP_TAG_TEST_COUNT="${BARRY_LOOP_TAG_TEST_COUNT:-0}"
+export BARRY_LOOP_TAG_TEST_FLYWHEEL_CONFIG="${BARRY_LOOP_TAG_TEST_FLYWHEEL_CONFIG:-conf/flywheel_tag_test.yaml}"
+export BARRY_LOOP_TAG_TEST_FILE="${BARRY_LOOP_TAG_TEST_FILE:-/Users/xinyuliu/Downloads/AI Loop/打标测试/打标剧.xlsx}"
+export BARRY_LOOP_TAG_TEST_WINDOW="${BARRY_LOOP_TAG_TEST_WINDOW:-06:30-13:30,18:30-00:30}"
+export BARRY_LOOP_TAG_TEST_US_WINDOW_PRIMARY="${BARRY_LOOP_TAG_TEST_US_WINDOW_PRIMARY:-08:00-13:30}"
+export BARRY_LOOP_TAG_TEST_US_WINDOW_BACKFILL="${BARRY_LOOP_TAG_TEST_US_WINDOW_BACKFILL:-06:30-08:00}"
+export BARRY_LOOP_TAG_TEST_SEA_WINDOW="${BARRY_LOOP_TAG_TEST_SEA_WINDOW:-18:30-00:30}"
 export BARRY_LOOP_REALTIME_FLYWHEEL_CONFIG="${BARRY_LOOP_REALTIME_FLYWHEEL_CONFIG:-}"
 export BARRY_LOOP_ORDINARY_FLYWHEEL_CONFIG="${BARRY_LOOP_ORDINARY_FLYWHEEL_CONFIG:-}"
 export BARRY_LOOP_DATE_ROLLOVER_RESET_ENABLED="${BARRY_LOOP_DATE_ROLLOVER_RESET_ENABLED:-1}"
@@ -100,7 +110,7 @@ state_root = Path((ROOT_DIR / "runtime" / "continuous-loop")).resolve()
 day = datetime.now().strftime("%Y-%m-%d")
 force_reset = str(os.getenv("BARRY_LOOP_FORCE_RESET_TARGETS_ON_START") or "").strip().lower() in {"1", "true", "yes", "on"}
 
-for line_name in ("realtime", "realtime_single", "realtime_day", "creative_list", "creative_list_day", "ordinary", "fbhot_test", "yourchannel", "recent_order", "stardusttv"):
+for line_name in ("realtime", "realtime_single", "realtime_day", "creative_list", "creative_list_day", "ordinary", "fbhot_test", "yourchannel", "recent_order", "stardusttv", "tag_test"):
     run_dir = state_root / day / line_name
     existing_rounds = list(run_dir.glob("round*.json")) + list(run_dir.glob("round*.progress.json")) + list(run_dir.glob("round*.summary"))
     if existing_rounds and not force_reset:

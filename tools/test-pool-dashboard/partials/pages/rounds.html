@@ -1,6 +1,9 @@
 <section class="panel" id="rounds-panel">
   <div class="section-head">
-    <h2>轮次归档明细</h2>
+    <div class="section-head-main">
+      <h2>轮次归档明细</h2>
+      <span class="section-kicker">归档查询</span>
+    </div>
   </div>
   <div class="filters">
     <select id="day-filter"><option value="">全部日期</option></select>
@@ -8,7 +11,7 @@
     <select id="line-filter"><option value="">全部线路</option></select>
     <select id="status-filter"><option value="">全部状态</option></select>
     <input id="search-input" type="text" placeholder="搜索轮次 / 备注 / 账号池" />
-    <button id="search-btn" class="ghost-btn">查询</button>
+    <button id="search-btn" class="primary-btn">查询</button>
   </div>
   <div class="table-wrap">
     <table class="data-table rounds-table">
