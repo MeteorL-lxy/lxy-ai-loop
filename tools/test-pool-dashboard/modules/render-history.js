@@ -13,30 +13,9 @@ export function renderDailyTopHistory(overview) {
     return;
   }
 
-  const summaryCards = (payload.summary_cards || []).map((card) => {
-    const lines = Array.isArray(card.note_lines) ? card.note_lines.map((line) => rewriteLineNames(line)) : [];
-    const note = card.note ? `<div class="history-sample-note">${esc(rewriteLineNames(card.note))}</div>` : "";
-    const metaRows = lines.length
-      ? `<div class="history-sample-meta">${lines.map((line) => `<div class="history-sample-meta-row">${esc(line)}</div>`).join("")}</div>`
-      : "";
-    return `
-      <article class="history-sample-card">
-        <div class="history-sample-top">
-          <div class="history-sample-label">${esc(card.label || "-")}</div>
-          <div class="history-sample-value">${esc(fmtTrendValue(card.value, card.kind))}</div>
-          ${note}
-        </div>
-        ${metaRows}
-      </article>
-    `;
-  }).join("");
-
   const rows = payload.rows || [];
   node.innerHTML = `
     ${payload.note ? `<div class="history-inline-note">${esc(rewriteLineNames(payload.note))}</div>` : ""}
-    <div class="history-card-grid-sample">
-      ${summaryCards}
-    </div>
     <div class="table-wrap table-wrap-five-rows history-table-wrap">
       <table class="data-table daily-history-table">
         <colgroup>

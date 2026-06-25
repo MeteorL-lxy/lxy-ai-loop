@@ -1603,6 +1603,8 @@ class TestPoolDashboardService:
         app_map = {
             "yourchannel_drama": "YourChannel",
             "yourchannel": "YourChannel",
+            "stardusttv": "StardustTV",
+            "stardust tv": "StardustTV",
             "touchshort": "TouchShort",
             "moboreels": "MoboReels",
             "goodshort": "GoodShort",
@@ -1761,6 +1763,36 @@ class TestPoolDashboardService:
             "income_total": income_total,
         }
 
+    def _resolve_my_task_line(
+        self,
+        row: dict[str, Any],
+        *,
+        task_line_map: dict[str, dict[str, Any]],
+        account_line_map: dict[str, str],
+        task_metrics: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if task_metrics is None:
+            task_metrics = self._extract_my_task_metrics(row)
+
+        task_id = _text(row.get("task_id"))
+        task_line = task_line_map.get(task_id, {}) if task_id else {}
+        line_name = _text(task_line.get("line_name"))
+        if line_name:
+            return task_line
+
+        should_try_publish_fallback = (
+            _safe_int(task_metrics.get("click_total")) > 0
+            or _safe_float(task_metrics.get("income_total")) > 0
+        )
+        if not should_try_publish_fallback:
+            return {}
+
+        task_line = self._infer_task_line_from_publish_candidates(
+            row,
+            account_line_map=account_line_map,
+        )
+        return task_line if _text(task_line.get("line_name")) else {}
+
     def _rebuild_line_cumulative_from_seed_rows(
         self,
         *,
@@ -1836,15 +1868,13 @@ class TestPoolDashboardService:
             if not day_key or day_key < start_day or day_key > end_day:
                 continue
             task_metrics = self._extract_my_task_metrics(row)
-            task_id = _text(row.get("task_id"))
-            task_line = task_line_map.get(task_id, {}) if task_id else {}
+            task_line = self._resolve_my_task_line(
+                row,
+                task_line_map=task_line_map,
+                account_line_map=account_line_map,
+                task_metrics=task_metrics,
+            )
             line_name = _text(task_line.get("line_name"))
-            if not line_name and _safe_float(task_metrics.get("income_total")) > 0:
-                task_line = self._infer_task_line_from_publish_candidates(
-                    row,
-                    account_line_map=account_line_map,
-                )
-                line_name = _text(task_line.get("line_name"))
             if not line_name or line_name not in buckets:
                 unmatched_click_total += _safe_int(task_metrics.get("click_total"))
                 unmatched_income_total = round(
@@ -2698,15 +2728,13 @@ class TestPoolDashboardService:
             if not day_key or day_key < start_day or day_key > end_day:
                 continue
             task_metrics = self._extract_my_task_metrics(row)
-            task_id = _text(row.get("task_id"))
-            task_line = task_line_map.get(task_id, {}) if task_id else {}
+            task_line = self._resolve_my_task_line(
+                row,
+                task_line_map=task_line_map,
+                account_line_map=account_line_map,
+                task_metrics=task_metrics,
+            )
             line_name = _text(task_line.get("line_name"))
-            if not line_name and _safe_float(task_metrics.get("income_total")) > 0:
-                task_line = self._infer_task_line_from_publish_candidates(
-                    row,
-                    account_line_map=account_line_map,
-                )
-                line_name = _text(task_line.get("line_name"))
             if not line_name or line_name not in buckets:
                 unmatched_click_total += _safe_int(task_metrics.get("click_total"))
                 unmatched_income_total = round(
@@ -2860,7 +2888,7 @@ class TestPoolDashboardService:
                     f"{unmatched_note}"
                 )
             ),
-            "cache_version": 4,
+            "cache_version": 5,
         }
 
     def _refresh_line_cumulative_totals_background(self, *, start_day: str, end_day: str, cache_key: str) -> None:
@@ -2914,28 +2942,8 @@ class TestPoolDashboardService:
             and persisted_payload
             and not has_legacy_unmapped
         ):
-            if persisted_cache_version < 4:
-                try:
-                    payload = self._rebuild_line_cumulative_from_seed_rows(
-                        start_day=start_day,
-                        end_day=end_day,
-                        seed_rows=persisted_rows,
-                    )
-                    self._set_cached_remote(cache_key, 600, payload)
-                    _json_dump(
-                        LINE_CUMULATIVE_CACHE_PATH,
-                        {
-                            "start_day": start_day,
-                            "end_day": end_day,
-                            "updated_at": datetime.now().isoformat(timespec="seconds"),
-                            "payload": payload,
-                        },
-                    )
-                    return payload
-                except Exception:
-                    pass
             self._set_cached_remote(cache_key, 600, persisted_payload)
-            refresh_needed = persisted_cache_version < 4
+            refresh_needed = persisted_cache_version < 5
             if persisted_updated_at:
                 try:
                     refresh_needed = refresh_needed or (datetime.now() - persisted_updated_at).total_seconds() > 600
