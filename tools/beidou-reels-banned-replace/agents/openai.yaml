@@ -1,0 +1,4 @@
+interface:
+  display_name: "Beidou REEL Guard"
+  short_description: "Detect REEL-banned accounts and trigger Beidou replacements"
+  default_prompt: "Detect accounts that cannot publish REEL videos from Barry Video continuous-loop round JSON and report them to Beidou for replacement"

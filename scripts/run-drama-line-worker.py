@@ -379,6 +379,14 @@ def _load_json_dict(path: Path) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+def _parse_json_text(text: str) -> dict:
+    try:
+        payload = json.loads(str(text or "").strip())
+    except Exception:
+        payload = {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def _recover_json_from_progress(*, json_path: Path, progress_path: Path, line_name: str, round_name: str) -> bool:
     if _json_file_has_payload(json_path) or not _json_file_has_payload(progress_path):
         return False
@@ -612,6 +620,84 @@ def _push_tracker_artifacts(
     if execute:
         cmd.append("--execute")
     _run_tracker_command(cmd, log_path=log_path, stage="push_round_result", fallback_output=tasks_path)
+
+
+def _run_reels_banned_replace(*, json_path: Path, label: str) -> None:
+    if not _truthy(os.getenv("BARRY_LOOP_REELS_BANNED_REPLACE", "1")):
+        return
+    if not _json_file_has_payload(json_path):
+        return
+    script = ROOT_DIR / "tools" / "beidou-reels-banned-replace" / "scripts" / "reels_banned_replace.py"
+    if not script.is_file():
+        _log(f"{label} Reel 受限替换跳过：工具不存在 {script}")
+        return
+    cmd = [
+        sys.executable,
+        str(script),
+        "--loop-root",
+        str(ROOT_DIR),
+        "--round-json",
+        str(json_path),
+        "--timeout",
+        str(max(10, _env_int("BARRY_LOOP_REELS_BANNED_REPLACE_TIMEOUT", 60))),
+    ]
+    dry_run = _truthy(os.getenv("BARRY_LOOP_REELS_BANNED_REPLACE_DRY_RUN", "0"))
+    if dry_run:
+        cmd.append("--dry-run")
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(ROOT_DIR),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=max(30, _env_int("BARRY_LOOP_REELS_BANNED_REPLACE_PROCESS_TIMEOUT", 120)),
+        )
+    except subprocess.TimeoutExpired:
+        _log(f"{label} Reel 受限替换超时，跳过本轮服务端替换；本地隔离逻辑仍会继续生效。")
+        return
+    except Exception as exc:
+        _log(f"{label} Reel 受限替换执行异常：{exc}")
+        return
+
+    stdout = (proc.stdout or "").strip()
+    stderr = (proc.stderr or "").strip()
+    payload = _parse_json_text(stdout)
+    if proc.returncode != 0:
+        detail = stderr or stdout[:500] or f"exit={proc.returncode}"
+        _log(f"{label} Reel 受限替换失败：{detail}")
+        return
+    count = int(payload.get("count") or 0) if isinstance(payload, dict) else 0
+    skipped = int(payload.get("skipped_duplicate_events") or 0) if isinstance(payload, dict) else 0
+    if count <= 0:
+        if skipped > 0:
+            _log(f"{label} Reel 受限替换跳过：本轮命中均已上报过（duplicate={skipped}）。")
+        return
+    social_ids = payload.get("social_ids") if isinstance(payload, dict) else []
+    if not social_ids and isinstance(payload.get("payload"), dict):
+        social_ids = payload["payload"].get("social_ids") or []
+    auth = str(payload.get("auth") or "") if isinstance(payload, dict) else ""
+    if dry_run:
+        _log(f"{label} Reel 受限替换 dry-run：count={count}, accounts={social_ids}")
+        return
+    _log(f"{label} Reel 受限账号已上报北斗替换：count={count}, accounts={social_ids}, auth={auth or 'unknown'}")
+    if _truthy(os.getenv("BARRY_LOOP_REELS_BANNED_RECONCILE", "1")):
+        reconcile = ROOT_DIR / "scripts" / "reconcile-account-pools.py"
+        if reconcile.is_file():
+            recon = subprocess.run(
+                [sys.executable, str(reconcile), "--write"],
+                cwd=str(ROOT_DIR),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=max(30, _env_int("BARRY_LOOP_REELS_BANNED_RECONCILE_TIMEOUT", 120)),
+            )
+            if recon.returncode == 0:
+                _log(f"{label} Reel 受限替换后已刷新账号池。")
+            else:
+                _log(f"{label} Reel 受限替换后刷新账号池失败：{(recon.stderr or recon.stdout or '')[:500]}")
 
 
 def _next_round_name(run_dir: Path) -> str:
@@ -1006,6 +1092,7 @@ def main() -> int:
             tasks_path=tasks_path,
             log_path=log_path,
         )
+        _run_reels_banned_replace(json_path=json_path, label=label)
         stop_line, total_video_issue_hits, recent_video_failures = _update_line_guard_for_round(
             run_dir=run_dir,
             round_name=round_name,
