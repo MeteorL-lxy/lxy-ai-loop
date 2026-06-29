@@ -34,6 +34,13 @@ VIDEO_ISSUE_FAILURE_PATTERNS = (
     "时长超出限制",
     "视频分辨率",
 )
+MONTHLY_PUBLISH_LIMIT_PATTERNS = (
+    "本月发帖数量已达上限",
+    "本月发帖数量上限",
+    "monthly post limit",
+    "monthly publish limit",
+)
+PUBLISH_QUOTA_STATE_FILE = "publish_quota_state.json"
 
 
 def _truthy(value: str | None) -> bool:
@@ -427,7 +434,15 @@ def _is_video_issue_reason(message: str) -> bool:
         return False
     if "账号不能发布reel" in text or "cannot publish reel" in lowered or "can't publish reel" in lowered:
         return False
+    if _is_monthly_publish_limit_reason(text):
+        return False
     return any(token.lower() in lowered for token in VIDEO_ISSUE_FAILURE_PATTERNS)
+
+
+def _is_monthly_publish_limit_reason(message: str) -> bool:
+    text = str(message or "").strip()
+    lowered = text.lower()
+    return bool(text) and any(pattern.lower() in lowered for pattern in MONTHLY_PUBLISH_LIMIT_PATTERNS)
 
 
 def _round_video_issue_failures(json_path: Path) -> list[dict[str, str]]:
@@ -449,6 +464,59 @@ def _round_video_issue_failures(json_path: Path) -> list[dict[str, str]]:
             }
         )
     return failures
+
+
+def _round_monthly_publish_limit_failures(json_path: Path) -> list[dict[str, str]]:
+    payload = _load_json_dict(json_path)
+    report = payload.get("report_zh") if isinstance(payload.get("report_zh"), dict) else {}
+    rows = report.get("发布失败任务") if isinstance(report.get("发布失败任务"), list) else []
+    failures: list[dict[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        reason = str(row.get("失败原因") or row.get("错误") or "").strip()
+        if not _is_monthly_publish_limit_reason(reason):
+            continue
+        failures.append(
+            {
+                "account": str(row.get("账号") or "").strip(),
+                "title": str(row.get("短剧") or row.get("标题") or "").strip(),
+                "reason": reason,
+            }
+        )
+    return failures
+
+
+def _record_publish_quota_stop(
+    *,
+    run_dir: Path,
+    line_name: str,
+    pool_name: str,
+    round_name: str,
+    failures: list[dict[str, str]],
+) -> None:
+    state_dir = ROOT_DIR / "runtime" / "account-flags"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    payload = _load_json_dict(state_dir / PUBLISH_QUOTA_STATE_FILE)
+    events = payload.get("events") if isinstance(payload.get("events"), list) else []
+    reason = str((failures[0] or {}).get("reason") or "").strip() if failures else ""
+    event = {
+        "line_name": line_name,
+        "pool_name": pool_name,
+        "round_name": round_name,
+        "run_dir": str(run_dir),
+        "failure_count": len(failures),
+        "reason": reason,
+        "stopped_at": datetime.now().strftime("%F %T"),
+    }
+    payload["latest"] = event
+    events.append(event)
+    payload["events"] = events[-200:]
+    payload["updated_at"] = datetime.now().strftime("%F %T")
+    (state_dir / PUBLISH_QUOTA_STATE_FILE).write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _update_line_guard_for_round(
@@ -1093,6 +1161,20 @@ def main() -> int:
             log_path=log_path,
         )
         _run_reels_banned_replace(json_path=json_path, label=label)
+        monthly_limit_failures = _round_monthly_publish_limit_failures(json_path)
+        if monthly_limit_failures:
+            _record_publish_quota_stop(
+                run_dir=run_dir,
+                line_name=line_name,
+                pool_name=pool_name,
+                round_name=round_name,
+                failures=monthly_limit_failures,
+            )
+            _log(
+                f"{label} 检测到发布侧月发帖额度触顶（{len(monthly_limit_failures)} 条）："
+                "停止当前线路，避免继续空跑和误判账号异常。"
+            )
+            return 0
         stop_line, total_video_issue_hits, recent_video_failures = _update_line_guard_for_round(
             run_dir=run_dir,
             round_name=round_name,

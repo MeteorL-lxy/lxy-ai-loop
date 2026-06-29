@@ -49,10 +49,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     include_today_top_play=include_today_top_play,
                 )
             elif parsed.path == "/api/test-pool/realtime-overview":
+                refresh = str(query.get("refresh", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
                 include_today_top_play = str(query.get("include_today_top_play", ["1"])[0]).strip().lower() not in {"0", "false", "no"}
                 payload = self.service.get_realtime_overview(
                     days=int(query.get("days", ["30"])[0]),
                     include_today_top_play=include_today_top_play,
+                    refresh=refresh,
                 )
             elif parsed.path == "/api/test-pool/loop-overview":
                 payload = {
@@ -91,7 +93,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     offset=int(query.get("offset", ["0"])[0]),
                 )
             elif parsed.path == "/api/test-pool/failures":
-                payload = self.service.get_failures(limit=int(query.get("limit", ["50"])[0]))
+                refresh = str(query.get("refresh", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+                payload = self.service.get_failures(limit=int(query.get("limit", ["50"])[0]), refresh=refresh)
             elif parsed.path == "/api/test-pool/accounts":
                 payload = self.service.get_accounts(limit=int(query.get("limit", ["50"])[0]))
             elif parsed.path.startswith("/api/test-pool/round/"):

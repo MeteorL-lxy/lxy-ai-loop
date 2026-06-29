@@ -11,6 +11,32 @@ import { closeDrawer, loadRounds } from "./modules/rounds.js";
 import { ensureLayoutLoaded } from "./modules/layout.js";
 import { initNavigation } from "./modules/navigation.js";
 
+async function fetchRealtimeBundle({ refresh = false, loadOptions = false } = {}) {
+  const requests = [
+    fetchJson(`./api/test-pool/realtime-overview?days=30&include_today_top_play=0${refresh ? "&refresh=1" : ""}`),
+    fetchJson(`./api/test-pool/failures?limit=80${refresh ? "&refresh=1" : ""}`),
+  ];
+  if (loadOptions && !state.optionsLoaded) {
+    requests.push(fetchJson("./api/test-pool/options"));
+  }
+  const [overview, failures, options] = await Promise.all(requests);
+  if (options) {
+    renderOptions(options);
+    state.optionsLoaded = true;
+  }
+  return { overview, failures };
+}
+
+function applyRealtimeBundle({ overview, failures }) {
+  renderOverall(overview);
+  renderToday(overview);
+  renderLineCards(overview, failures);
+  renderAccountGroups(overview.account_groups || []);
+  qs("status-text").textContent = "已连接";
+  qs("db-path").textContent = overview.db_path || qs("db-path").textContent || "-";
+  qs("last-updated").textContent = fmtDateTime(overview.last_exported_at);
+}
+
 async function loadTopPlay({ force = false } = {}) {
   if (state.topPlayRefreshing) return;
   state.topPlayRefreshing = true;
@@ -24,18 +50,11 @@ async function loadTopPlay({ force = false } = {}) {
   }
 }
 
-async function loadHeavyPanels({ refreshTrend = false, refreshDailyHistory = false, refreshLineCumulative = false } = {}) {
-  const [trendAnalyzer, dailyTopHistory, lineCumulative] = await Promise.allSettled([
-    fetchJson(`./api/test-pool/trend-analyzer${refreshTrend ? "?refresh=1" : ""}`),
+async function loadContentPanels({ refreshDailyHistory = false, refreshLineCumulative = false } = {}) {
+  const [dailyTopHistory, lineCumulative] = await Promise.allSettled([
     fetchJson(`./api/test-pool/daily-top-history${refreshDailyHistory ? "?force=1" : ""}`),
     fetchJson(`./api/test-pool/line-cumulative${refreshLineCumulative ? "?force=1" : ""}`),
   ]);
-
-  if (trendAnalyzer.status === "fulfilled") {
-    renderHistory({ trend_analyzer: trendAnalyzer.value });
-  } else {
-    console.error(trendAnalyzer.reason);
-  }
 
   if (dailyTopHistory.status === "fulfilled") {
     renderDailyTopHistory({ daily_top_history: dailyTopHistory.value });
@@ -50,96 +69,123 @@ async function loadHeavyPanels({ refreshTrend = false, refreshDailyHistory = fal
   }
 }
 
+async function loadTrendPanel({ refreshTrend = false } = {}) {
+  try {
+    const payload = await fetchJson(`./api/test-pool/trend-analyzer${refreshTrend ? "?refresh=1" : ""}`);
+    renderHistory({ trend_analyzer: payload });
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+async function loadCurrentPage(page = state.currentPage, { force = false } = {}) {
+  switch (page) {
+    case "home": {
+      const { overview, failures } = await fetchRealtimeBundle({
+        refresh: force,
+        loadOptions: true,
+      });
+      applyRealtimeBundle({ overview, failures });
+      await loadTopPlay({ force });
+      state.pageLoaded.home = true;
+      break;
+    }
+    case "lines": {
+      const { overview, failures } = await fetchRealtimeBundle({
+        refresh: force,
+        loadOptions: true,
+      });
+      applyRealtimeBundle({ overview, failures });
+      state.pageLoaded.lines = true;
+      break;
+    }
+    case "content":
+      await loadContentPanels({
+        refreshDailyHistory: force,
+        refreshLineCumulative: force,
+      });
+      state.pageLoaded.content = true;
+      break;
+    case "trend":
+      await loadTrendPanel({ refreshTrend: force });
+      state.pageLoaded.trend = true;
+      break;
+    case "pools": {
+      const { overview } = await fetchRealtimeBundle({
+        refresh: force,
+        loadOptions: false,
+      });
+      renderAccountGroups(overview.account_groups || []);
+      qs("status-text").textContent = "已连接";
+      qs("db-path").textContent = overview.db_path || qs("db-path").textContent || "-";
+      qs("last-updated").textContent = fmtDateTime(overview.last_exported_at);
+      state.pageLoaded.pools = true;
+      break;
+    }
+    case "rounds":
+      if (!state.optionsLoaded || force) {
+        const options = await fetchJson("./api/test-pool/options");
+        renderOptions(options);
+        state.optionsLoaded = true;
+      }
+      await loadRounds();
+      state.pageLoaded.rounds = true;
+      break;
+    default:
+      break;
+  }
+}
+
 async function refreshRealtimePanels() {
   if (state.refreshing || state.realtimeRefreshing) return;
   state.realtimeRefreshing = true;
   qs("status-text").textContent = "刷新中";
   try {
-    const [overview, failures] = await Promise.all([
-      fetchJson("./api/test-pool/realtime-overview?days=30&include_today_top_play=0"),
-      fetchJson("./api/test-pool/failures?limit=80"),
-    ]);
-
-    renderOverall(overview);
-    renderToday(overview);
-    renderLineCards(overview, failures);
-    renderAccountGroups(overview.account_groups || []);
-
-    qs("status-text").textContent = "已连接";
-    qs("db-path").textContent = overview.db_path || qs("db-path").textContent || "-";
-    qs("last-updated").textContent = fmtDateTime(overview.last_exported_at);
+    if (state.currentPage === "home") {
+      const { overview, failures } = await fetchRealtimeBundle({ refresh: false, loadOptions: false });
+      applyRealtimeBundle({ overview, failures });
+      await loadTopPlay();
+    } else if (state.currentPage === "lines") {
+      const { overview, failures } = await fetchRealtimeBundle({ refresh: false, loadOptions: false });
+      applyRealtimeBundle({ overview, failures });
+    } else if (state.currentPage === "pools") {
+      const { overview } = await fetchRealtimeBundle({ refresh: false, loadOptions: false });
+      renderAccountGroups(overview.account_groups || []);
+      qs("status-text").textContent = "已连接";
+      qs("db-path").textContent = overview.db_path || qs("db-path").textContent || "-";
+      qs("last-updated").textContent = fmtDateTime(overview.last_exported_at);
+    } else {
+      qs("status-text").textContent = "已连接";
+    }
   } catch (error) {
     showError(error);
   } finally {
     state.realtimeRefreshing = false;
   }
-
-  loadTopPlay().catch((error) => console.error(error));
 }
 
-async function refreshAll({
-  forceRounds = false,
-  refreshTrend = false,
-  refreshDailyHistory = false,
-  refreshLineCumulative = false,
-  forceTopPlay = false,
-} = {}) {
+async function refreshAll({ force = false } = {}) {
   if (state.refreshing || state.realtimeRefreshing) return;
   state.refreshing = true;
   qs("status-text").textContent = "刷新中";
   try {
-    const requests = [
-      fetchJson("./api/test-pool/realtime-overview?days=30&include_today_top_play=0"),
-      fetchJson("./api/test-pool/failures?limit=80"),
-    ];
-    if (!state.optionsLoaded) {
-      requests.push(fetchJson("./api/test-pool/options"));
-    }
-    const responses = await Promise.all(requests);
-    const [overview, failures, options] = responses;
-
-    renderOverall(overview);
-    renderToday(overview);
-    renderLineCards(overview, failures);
-    renderAccountGroups(overview.account_groups || []);
-
-    if (options) {
-      renderOptions(options);
-      state.optionsLoaded = true;
-    }
-
-    const roundsPanel = qs("rounds-panel");
-    if (forceRounds || roundsPanel.open || state.roundsLoaded) {
-      await loadRounds();
-    }
-
-    qs("status-text").textContent = "已连接";
-    qs("db-path").textContent = overview.db_path || "-";
-    qs("last-updated").textContent = fmtDateTime(overview.last_exported_at);
+    await loadCurrentPage(state.currentPage, { force });
   } catch (error) {
     showError(error);
   } finally {
     state.refreshing = false;
   }
-
-  loadTopPlay({ force: forceTopPlay }).catch((error) => console.error(error));
-  loadHeavyPanels({ refreshTrend, refreshDailyHistory, refreshLineCumulative }).catch((error) => console.error(error));
 }
 
 function bindEvents() {
   initNavigation((page) => {
-    if (page === "rounds" && !state.roundsLoaded) {
-      loadRounds().catch(showError);
+    if (!state.pageLoaded[page]) {
+      loadCurrentPage(page, { force: false }).catch(showError);
     }
   });
 
   qs("refresh-btn").addEventListener("click", () => {
-    refreshAll({
-      forceRounds: state.currentPage === "rounds" || state.roundsLoaded,
-      refreshTrend: true,
-      refreshLineCumulative: true,
-      forceTopPlay: true,
-    }).catch((error) => console.error(error));
+    refreshAll({ force: true }).catch((error) => console.error(error));
   });
 
   qs("search-btn").addEventListener("click", () => {
@@ -181,7 +227,7 @@ function showError(error) {
 async function bootstrap() {
   await ensureLayoutLoaded();
   bindEvents();
-  await refreshAll();
+  await refreshAll({ force: false });
   window.setInterval(() => {
     refreshRealtimePanels().catch((error) => console.error(error));
   }, state.autoRefreshMs);

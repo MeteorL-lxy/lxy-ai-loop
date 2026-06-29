@@ -28,6 +28,7 @@ DAILY_TOP_HISTORY_CACHE_PATH = RUNTIME_ROOT / "dashboard-cache" / "daily_top_his
 SUMMARY_METRICS_CACHE_PATH = RUNTIME_ROOT / "dashboard-cache" / "summary_metrics.json"
 TREND_ANALYZER_CACHE_PATH = RUNTIME_ROOT / "dashboard-cache" / "trend_analyzer.json"
 LINE_CUMULATIVE_CACHE_PATH = RUNTIME_ROOT / "dashboard-cache" / "line_cumulative_totals.json"
+TODAY_TOP_PLAY_CACHE_PATH = RUNTIME_ROOT / "dashboard-cache" / "today_top_play.json"
 TREND_BASELINE_START = "2026-05-19"
 TREND_BASELINE_END = "2026-06-08"
 TREND_RUNNING_START = "2026-06-09"
@@ -2119,7 +2120,15 @@ class TestPoolDashboardService:
             "title_count_today": _safe_int(today_records.get("title_count"), len(titles)),
         }
 
-    def get_loop_overview(self) -> dict[str, Any]:
+    def get_loop_overview(self, *, refresh: bool = False) -> dict[str, Any]:
+        today_key = date.today().isoformat()
+        cache_key = f"loop-overview:{today_key}"
+        if refresh:
+            self._remote_cache.pop(cache_key, None)
+        cached = self._get_cached_remote(cache_key)
+        if cached is not None:
+            return cached
+
         today_key, today_rounds = self._select_today_rounds()
         all_rounds = self._scan_round_archives()
         account_group_map = {row["key"]: row for row in self._load_account_groups()}
@@ -2199,29 +2208,17 @@ class TestPoolDashboardService:
                     "is_running": is_running,
                 }
             )
-        return {
+        return self._set_cached_remote(cache_key, 20, {
             "today_key": today_key,
             "window_summary": {
                 "night_range": "18:00-次日12:00",
                 "day_range": "10:00-18:00",
             },
             "line_targets": line_targets,
-        }
+        })
 
-    def get_today_top_play(self, *, force: bool = False) -> dict[str, Any]:
-        day_key = date.today().isoformat()
-        if force:
-            self._remote_cache.pop(f"publish-analysis-items:{day_key}", None)
-        try:
-            analysis_payload = self._fetch_publish_analysis_items(day_key=day_key)
-        except Exception as exc:
-            return {
-                "available": False,
-                "day_key": day_key,
-                "items": [],
-                "note": f"今天的播放分析接口暂时没拿到数据：{exc}",
-            }
-
+    def _build_today_top_play_payload(self, *, day_key: str) -> dict[str, Any]:
+        analysis_payload = self._fetch_publish_analysis_items(day_key=day_key)
         raw_items = analysis_payload.get("items") if isinstance(analysis_payload.get("items"), list) else []
         total_count = _safe_int(analysis_payload.get("total_count"))
         total_view = _safe_int(analysis_payload.get("view_total"))
@@ -2253,7 +2250,6 @@ class TestPoolDashboardService:
                     "line_name": line_name,
                     "line_label": LINE_DISPLAY_NAMES.get(line_name) or "待识别线路",
                     "clip_method": _line_clip_method(line_name),
-                    # 卡片正文展示真实发布文案，不再回退成二次清洗后的剧情摘要。
                     "copy_text": raw_copy_text or "-",
                 }
             )
@@ -2286,6 +2282,80 @@ class TestPoolDashboardService:
             "items": positive_items[:5],
             "note": f"今天共回收 {total_count or len(items)} 条记录，总播放 {total_view}。",
         }
+
+    def _refresh_today_top_play_background(self, *, day_key: str, cache_key: str) -> None:
+        try:
+            payload = self._build_today_top_play_payload(day_key=day_key)
+            self._set_cached_remote(cache_key, 30, payload)
+            _json_dump(
+                TODAY_TOP_PLAY_CACHE_PATH,
+                {
+                    "day_key": day_key,
+                    "updated_at": datetime.now().isoformat(timespec="seconds"),
+                    "payload": payload,
+                },
+            )
+        except Exception:
+            pass
+        finally:
+            self._background_refreshing.discard(cache_key)
+
+    def get_today_top_play(self, *, force: bool = False) -> dict[str, Any]:
+        day_key = date.today().isoformat()
+        cache_key = f"today-top-play:{day_key}"
+        if force:
+            self._remote_cache.pop(cache_key, None)
+            self._remote_cache.pop(f"publish-analysis-items:{day_key}", None)
+
+        cached = self._get_cached_remote(cache_key)
+        if cached is not None and not force:
+            return cached
+
+        persisted = _json_load(TODAY_TOP_PLAY_CACHE_PATH)
+        persisted_day_key = _text(persisted.get("day_key"))
+        persisted_updated_at_raw = _text(persisted.get("updated_at"))
+        persisted_payload = persisted.get("payload") if isinstance(persisted.get("payload"), dict) else {}
+        try:
+            persisted_updated_at = datetime.fromisoformat(persisted_updated_at_raw) if persisted_updated_at_raw else None
+        except Exception:
+            persisted_updated_at = None
+
+        if not force and persisted_day_key == day_key and persisted_payload:
+            self._set_cached_remote(cache_key, 30, persisted_payload)
+            refresh_needed = True
+            if persisted_updated_at:
+                try:
+                    refresh_needed = (datetime.now() - persisted_updated_at).total_seconds() > 30
+                except Exception:
+                    refresh_needed = True
+            if refresh_needed and cache_key not in self._background_refreshing:
+                self._background_refreshing.add(cache_key)
+                threading.Thread(
+                    target=self._refresh_today_top_play_background,
+                    kwargs={"day_key": day_key, "cache_key": cache_key},
+                    daemon=True,
+                ).start()
+            return persisted_payload
+
+        try:
+            payload = self._build_today_top_play_payload(day_key=day_key)
+        except Exception as exc:
+            return {
+                "available": False,
+                "day_key": day_key,
+                "items": [],
+                "note": f"今天的播放分析接口暂时没拿到数据：{exc}",
+            }
+        self._set_cached_remote(cache_key, 30, payload)
+        _json_dump(
+            TODAY_TOP_PLAY_CACHE_PATH,
+            {
+                "day_key": day_key,
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+                "payload": payload,
+            },
+        )
+        return payload
 
     def get_daily_top_play_history(self, *, start_day: str = DAILY_TOP_HISTORY_START, force: bool = False) -> dict[str, Any]:
         display_end_dt = date.today() - timedelta(days=1)
@@ -2323,6 +2393,19 @@ class TestPoolDashboardService:
             and persisted_payload
         ):
             return self._set_cached_remote(cache_key, 300, persisted_payload)
+        if (
+            not force_refresh
+            and persisted_payload
+            and cache_key not in self._background_refreshing
+        ):
+            self._set_cached_remote(cache_key, 300, persisted_payload)
+            self._background_refreshing.add(cache_key)
+            threading.Thread(
+                target=self._refresh_daily_top_play_history_background,
+                kwargs={"start_day": start_day, "cache_key": cache_key},
+                daemon=True,
+            ).start()
+            return persisted_payload
 
         persisted_rows = persisted.get("rows") if isinstance(persisted.get("rows"), dict) else {}
         cached_rows: dict[str, dict[str, Any]] = {
@@ -2669,6 +2752,15 @@ class TestPoolDashboardService:
         )
         return self._set_cached_remote(cache_key, 300, payload)
 
+    def _refresh_daily_top_play_history_background(self, *, start_day: str, cache_key: str) -> None:
+        try:
+            payload = self.get_daily_top_play_history(start_day=start_day, force=True)
+            self._set_cached_remote(cache_key, 300, payload)
+        except Exception:
+            pass
+        finally:
+            self._background_refreshing.discard(cache_key)
+
     def _build_line_cumulative_totals_payload(self, *, start_day: str, end_day: str) -> dict[str, Any]:
         line_order = [
             "realtime_day",
@@ -2938,12 +3030,13 @@ class TestPoolDashboardService:
         if (
             not force
             and persisted_start_day == start_day
-            and persisted_end_day == end_day
             and persisted_payload
             and not has_legacy_unmapped
         ):
             self._set_cached_remote(cache_key, 600, persisted_payload)
             refresh_needed = persisted_cache_version < 5
+            if persisted_end_day != end_day:
+                refresh_needed = True
             if persisted_updated_at:
                 try:
                     refresh_needed = refresh_needed or (datetime.now() - persisted_updated_at).total_seconds() > 600
@@ -3262,7 +3355,7 @@ class TestPoolDashboardService:
         ]
         overall_summary = self._build_overall_summary(rounds)
         account_groups = self._load_account_groups()
-        loop_overview = self.get_loop_overview()
+        loop_overview = self.get_loop_overview(refresh=False)
         historical_daily_report = {
             "available": False,
             "note": "当前本地没有可直接展示的分析日报汇总。",
@@ -3296,11 +3389,18 @@ class TestPoolDashboardService:
             "daily_top_history": self.get_daily_top_play_history(force=False),
         }
 
-    def get_realtime_overview(self, *, days: int = 30, include_today_top_play: bool = True) -> dict[str, Any]:
+    def get_realtime_overview(self, *, days: int = 30, include_today_top_play: bool = True, refresh: bool = False) -> dict[str, Any]:
+        cache_key = f"realtime-overview:{days}:{int(include_today_top_play)}:{date.today().isoformat()}"
+        if refresh:
+            self._remote_cache.pop(cache_key, None)
+        cached = self._get_cached_remote(cache_key)
+        if cached is not None:
+            return cached
+
         rounds = self._filtered_rounds(days=days)
         last_exported_at = max((row.exported_at for row in rounds if row.exported_at), default="")
         overall_summary = self._build_overall_summary(rounds)
-        loop_overview = self.get_loop_overview()
+        loop_overview = self.get_loop_overview(refresh=refresh)
         today_top_play = self.get_today_top_play(force=False) if include_today_top_play else None
         account_groups = self._load_account_groups()
         requested = sum(row.requested_count for row in rounds)
@@ -3309,7 +3409,7 @@ class TestPoolDashboardService:
         processing = sum(row.processing_count for row in rounds)
         unsubmitted = sum(row.unsubmitted_count for row in rounds)
         all_days = sorted({row.day_key for row in rounds}, reverse=True)
-        return {
+        return self._set_cached_remote(cache_key, 20, {
             "db_path": str(self.runtime_root),
             "window_days": days,
             "last_exported_at": last_exported_at,
@@ -3327,7 +3427,7 @@ class TestPoolDashboardService:
             "loop_overview": loop_overview,
             "today_top_play": today_top_play,
             "account_groups": account_groups,
-        }
+        })
 
     def get_trends(self, *, days: int = 30) -> dict[str, Any]:
         rounds = self._filtered_rounds(days=days)
@@ -3361,7 +3461,14 @@ class TestPoolDashboardService:
             daily.append(row)
         return {"days": days, "daily": daily, "by_line": []}
 
-    def get_failures(self, *, limit: int = 50) -> dict[str, Any]:
+    def get_failures(self, *, limit: int = 50, refresh: bool = False) -> dict[str, Any]:
+        cache_key = f"failures:{limit}:{date.today().isoformat()}"
+        if refresh:
+            self._remote_cache.pop(cache_key, None)
+        cached = self._get_cached_remote(cache_key)
+        if cached is not None:
+            return cached
+
         rounds = self._scan_round_archives()
         failure_counter: Counter[str] = Counter()
         recent_failed: list[dict[str, Any]] = []
@@ -3389,7 +3496,7 @@ class TestPoolDashboardService:
                         }
                     )
         top_reasons = [{"failure_reason": reason, "count": count} for reason, count in failure_counter.most_common(limit)]
-        return {"top_reasons": top_reasons, "recent_failed": recent_failed[:limit]}
+        return self._set_cached_remote(cache_key, 20, {"top_reasons": top_reasons, "recent_failed": recent_failed[:limit]})
 
     def get_accounts(self, *, limit: int = 50) -> dict[str, Any]:
         buckets: dict[str, dict[str, Any]] = {}
