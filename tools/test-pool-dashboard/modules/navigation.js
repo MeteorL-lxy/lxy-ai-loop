@@ -1,6 +1,6 @@
 import { state } from "./state.js";
 
-export const PAGES = ["home", "lines", "content", "trend", "pools", "rounds"];
+export const PAGES = ["home", "accounts", "lines", "content", "trend", "pools", "rounds"];
 
 export function setCurrentPage(page) {
   const nextPage = PAGES.includes(page) ? page : "home";

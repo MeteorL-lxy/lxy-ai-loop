@@ -8,6 +8,7 @@ export async function ensureLayoutLoaded() {
     const partials = {
       shell: "./partials/shell.html?v=20260624-4",
       home: "./partials/pages/home.html?v=20260624-4",
+      accounts: "./partials/pages/accounts.html?v=20260630-1",
       lines: "./partials/pages/lines.html?v=20260624-4",
       content: "./partials/pages/content.html?v=20260624-4",
       trend: "./partials/pages/trend.html?v=20260624-4",
@@ -31,8 +32,9 @@ export async function ensureLayoutLoaded() {
         }
         root.innerHTML = shellHtml;
 
-        const [home, lines, content, trend, pools, rounds] = await Promise.all([
+        const [home, accounts, lines, content, trend, pools, rounds] = await Promise.all([
           loadPartial(partials.home),
+          loadPartial(partials.accounts),
           loadPartial(partials.lines),
           loadPartial(partials.content),
           loadPartial(partials.trend),
@@ -41,6 +43,7 @@ export async function ensureLayoutLoaded() {
         ]);
 
         document.getElementById("page-home-slot").innerHTML = home;
+        document.getElementById("page-accounts-slot").innerHTML = accounts;
         document.getElementById("page-lines-slot").innerHTML = lines;
         document.getElementById("page-content-slot").innerHTML = content;
         document.getElementById("page-trend-slot").innerHTML = trend;

@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ENV_FILE="${BARRY_SERVER_ENV_FILE:-$ROOT_DIR/.env.server}"
+SUPERVISOR_SCRIPT="$ROOT_DIR/scripts/run-dual-line-supervisor.py"
 
 if [[ -f "$ENV_FILE" ]]; then
   set -a
@@ -10,6 +11,15 @@ if [[ -f "$ENV_FILE" ]]; then
   source "$ENV_FILE"
   set +a
 fi
+
+for EXTRA_ENV_FILE in "$ROOT_DIR/.env.local" "$ROOT_DIR/.env.task-log.local"; do
+  if [[ -f "$EXTRA_ENV_FILE" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$EXTRA_ENV_FILE"
+    set +a
+  fi
+done
 
 cd "$ROOT_DIR"
 
@@ -30,14 +40,22 @@ echo "INTERVAL_SECONDS=$INTERVAL_SECONDS"
 echo "SUPERVISOR_LOG=$SUPERVISOR_LOG"
 echo "说明：本脚本会把 10 分钟状态快照直接打印到当前 Claude 终端。"
 echo
-
-bash "$ROOT_DIR/scripts/run-dual-line-forever.sh" "$@" >"$SUPERVISOR_LOG" 2>&1 &
-SUPERVISOR_PID=$!
+SUPERVISOR_PID="$(pgrep -fl "run-dual-line-supervisor.py" | awk 'NR==1 {print $1}')"
+REPORTER_MODE="attach"
+if [[ -z "$SUPERVISOR_PID" ]]; then
+  bash "$ROOT_DIR/scripts/run-dual-line-forever.sh" "$@" >"$SUPERVISOR_LOG" 2>&1 &
+  SUPERVISOR_PID=$!
+  REPORTER_MODE="spawn"
+  echo "已启动新的 supervisor pid=${SUPERVISOR_PID}"
+else
+  echo "检测到现有 supervisor pid=${SUPERVISOR_PID}，直接附着 reporter，不重复启动。"
+  SUPERVISOR_LOG="${BARRY_LOOP_CLAUDE_REPORT_ATTACH_LOG:-$ROOT_DIR/runtime/continuous-loop/supervisor.attach.log}"
+fi
 
 cleanup() {
-  if kill -0 "$SUPERVISOR_PID" >/dev/null 2>&1; then
+  if [[ "$REPORTER_MODE" == "spawn" ]] && [[ -n "${SUPERVISOR_PID:-}" ]] && kill -0 "$SUPERVISOR_PID" >/dev/null 2>&1; then
     echo
-    echo "收到退出信号，停止 supervisor pid=$SUPERVISOR_PID ..."
+    echo "收到退出信号，停止 supervisor pid=${SUPERVISOR_PID} ..."
     kill -TERM "$SUPERVISOR_PID" >/dev/null 2>&1 || true
     wait "$SUPERVISOR_PID" >/dev/null 2>&1 || true
   fi
@@ -52,7 +70,7 @@ while kill -0 "$SUPERVISOR_PID" >/dev/null 2>&1; do
     --lines "$REPORT_LINES" \
     --state-root "$STATE_ROOT" \
     --day "$(date '+%F')" || true
-  echo "supervisor pid=$SUPERVISOR_PID  log=$SUPERVISOR_LOG"
+  echo "supervisor pid=${SUPERVISOR_PID}  log=${SUPERVISOR_LOG}"
   echo "================ 快照结束 ================"
   echo
   sleep "$INTERVAL_SECONDS" &

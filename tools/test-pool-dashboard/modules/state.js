@@ -7,6 +7,7 @@ export const state = {
   roundsLoaded: false,
   pageLoaded: {
     home: false,
+    accounts: false,
     lines: false,
     content: false,
     trend: false,

@@ -519,6 +519,36 @@ def _record_publish_quota_stop(
     )
 
 
+def _publish_quota_stop_reason_for_current_month(*, line_name: str, pool_name: str) -> str:
+    if _truthy(os.getenv("BARRY_LOOP_IGNORE_PUBLISH_QUOTA_STOP")):
+        return ""
+    state_path = ROOT_DIR / "runtime" / "account-flags" / PUBLISH_QUOTA_STATE_FILE
+    payload = _load_json_dict(state_path)
+    current_month = datetime.now().strftime("%Y-%m")
+    candidates: list[dict] = []
+    latest = payload.get("latest")
+    if isinstance(latest, dict):
+        candidates.append(latest)
+    events = payload.get("events")
+    if isinstance(events, list):
+        candidates.extend(item for item in events if isinstance(item, dict))
+    for event in reversed(candidates):
+        stopped_at = str(event.get("stopped_at") or event.get("updated_at") or "").strip()
+        if not stopped_at.startswith(current_month):
+            continue
+        event_line = str(event.get("line_name") or "").strip()
+        event_pool = str(event.get("pool_name") or "").strip()
+        if event_line and event_line != line_name:
+            continue
+        if event_pool and event_pool != pool_name:
+            continue
+        reason = str(event.get("reason") or "").strip()
+        if reason and not _is_monthly_publish_limit_reason(reason):
+            continue
+        return reason or "本月发帖数量已达上限"
+    return ""
+
+
 def _update_line_guard_for_round(
     *,
     run_dir: Path,
@@ -925,6 +955,16 @@ def main() -> int:
     pool_name = str(os.getenv("BARRY_LOOP_ACCOUNT_POOL") or "").strip()
     if not pool_name:
         raise SystemExit("missing BARRY_LOOP_ACCOUNT_POOL")
+    publish_quota_stop_reason = _publish_quota_stop_reason_for_current_month(
+        line_name=line_name,
+        pool_name=pool_name,
+    )
+    if publish_quota_stop_reason:
+        _log(
+            f"{line_name} 本月发布侧发帖额度已触顶，当前账号池={pool_name}，"
+            f"本轮不再进入发布流程。原因：{publish_quota_stop_reason}"
+        )
+        return 0
     flywheel_config = str(os.getenv("BARRY_LOOP_FLYWHEEL_CONFIG") or "").strip()
     platform = str(os.getenv("BARRY_LOOP_PLATFORM") or "FACEBOOK").strip() or "FACEBOOK"
     configured_count = _env_int("BARRY_LOOP_COUNT", 0)
@@ -1051,11 +1091,13 @@ def main() -> int:
             "BARRY_FEISHU_TEST_PUSH=0",
             f"BARRY_VIDEO_TEST_SUMMARY_DIR={line_report_dir}",
             f"BARRY_LOOP_LINE_NAME={line_name}",
+            f"BARRY_LOOP_ROUND_NAME={round_name}",
             f"BARRY_LOOP_ROUND_LABEL={label}",
             "BARRY_LOOP_ROUND_SCHEDULED_TIME=continuous",
             f"BARRY_LOOP_ROUND_STARTED_AT={started}",
             f"BARRY_REALTIME_RANK_ENABLED={realtime_enabled}",
             f"BARRY_LOOP_PROGRESS_PATH={progress_path}",
+            f"BARRY_LOOP_FINAL_JSON_PATH={json_path}",
         ]
         if flywheel_config:
             cmd.append(f"FLYWHEEL_CONFIG={flywheel_config}")

@@ -11,6 +11,15 @@ if [[ -f "$ENV_FILE" ]]; then
   set +a
 fi
 
+for EXTRA_ENV_FILE in "$ROOT_DIR/.env.local" "$ROOT_DIR/.env.task-log.local"; do
+  if [[ -f "$EXTRA_ENV_FILE" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$EXTRA_ENV_FILE"
+    set +a
+  fi
+done
+
 cd "$ROOT_DIR"
 
 export BARRY_VIDEO_API_ENV="${BARRY_VIDEO_API_ENV:-test}"

@@ -15,6 +15,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT_DIR / "tools" / "test-pool-dashboard"
 
 sys.path.insert(0, str(ROOT_DIR / "backend"))
+from account_health_dashboard_api import AccountHealthDashboardService  # noqa: E402
 from test_pool_dashboard_api import TestPoolDashboardService  # noqa: E402
 
 
@@ -29,6 +30,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def service(self) -> TestPoolDashboardService:
         return self.server.service  # type: ignore[attr-defined]
 
+    @property
+    def account_health_service(self) -> AccountHealthDashboardService:
+        return self.server.account_health_service  # type: ignore[attr-defined]
+
     def log_message(self, fmt: str, *args) -> None:
         sys.stderr.write("[%s] %s\n" % (self.log_date_time_string(), fmt % args))
 
@@ -37,7 +42,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/api/test-pool/"):
             self._handle_api(parsed)
             return
+        if parsed.path.startswith("/api/account-health/"):
+            self._handle_account_health_api(parsed)
+            return
         self._serve_static(parsed.path)
+
+    def _handle_account_health_api(self, parsed) -> None:
+        query = parse_qs(parsed.query)
+        try:
+            if parsed.path == "/api/account-health/overview":
+                payload = self.account_health_service.get_overview(
+                    scope=str(query.get("scope", ["loop"])[0] or "loop"),
+                )
+            else:
+                self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            self._send_json(payload)
+        except Exception as exc:
+            self._send_json({"available": False, "error": str(exc)})
 
     def _handle_api(self, parsed) -> None:
         query = parse_qs(parsed.query)
@@ -143,9 +165,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run the local test-pool dashboard server.")
-    parser.add_argument("--host", default=os.getenv("TEST_POOL_DASHBOARD_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.getenv("TEST_POOL_DASHBOARD_PORT", "8765")))
+    parser = argparse.ArgumentParser(description="Run the local AI loop dashboard server.")
+    parser.add_argument("--host", default=os.getenv("AI_LOOP_DASHBOARD_HOST", os.getenv("TEST_POOL_DASHBOARD_HOST", "127.0.0.1")))
+    parser.add_argument("--port", type=int, default=int(os.getenv("AI_LOOP_DASHBOARD_PORT", os.getenv("TEST_POOL_DASHBOARD_PORT", "8765"))))
     args = parser.parse_args()
 
     if not STATIC_DIR.exists():
@@ -153,6 +175,7 @@ def main() -> int:
 
     server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
     server.service = TestPoolDashboardService()  # type: ignore[attr-defined]
+    server.account_health_service = AccountHealthDashboardService()  # type: ignore[attr-defined]
     print(
         json.dumps(
             {

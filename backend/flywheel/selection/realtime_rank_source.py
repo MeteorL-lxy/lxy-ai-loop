@@ -92,13 +92,17 @@ _GUANGDADA_CALL_COUNT_LOCK = Lock()
 _GUANGDADA_CALL_COUNTS: dict[tuple[str, str], int] = {}
 
 
+def _shared_state_dir() -> Path:
+    state_root = str(os.getenv("BARRY_LOOP_STATE_ROOT") or "").strip()
+    base = Path(state_root).expanduser().resolve() if state_root else (ROOT_DIR / "runtime" / "continuous-loop")
+    return (base / "_shared").resolve()
+
+
 def _anchor_usage_state_path() -> Path:
     raw = str(os.getenv("BARRY_REALTIME_ANCHOR_USAGE_STATE_FILE") or "").strip()
     if raw:
         return Path(raw).expanduser().resolve()
-    state_root = str(os.getenv("BARRY_LOOP_STATE_ROOT") or "").strip()
-    base = Path(state_root).expanduser().resolve() if state_root else (ROOT_DIR / "runtime" / "continuous-loop")
-    return (base / "_shared" / "realtime_anchor_usage.json").resolve()
+    return (_shared_state_dir() / "realtime_anchor_usage.json").resolve()
 
 
 def _anchor_cooldown_days() -> int:
@@ -113,6 +117,40 @@ def _anchor_cooldown_days() -> int:
 def _anchor_allow_cooldown_fallback() -> bool:
     raw = str(os.getenv("BARRY_REALTIME_ANCHOR_ALLOW_COOLDOWN_FALLBACK") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def _creative_list_success_ttl_seconds() -> int:
+    raw = os.getenv("BARRY_CREATIVE_LIST_CACHE_TTL_SECONDS")
+    try:
+        value = int(raw) if raw is not None and str(raw).strip() != "" else 86400
+    except (TypeError, ValueError):
+        value = 86400
+    return max(300, min(value, 604800))
+
+
+def _creative_list_empty_ttl_seconds() -> int:
+    raw = os.getenv("BARRY_CREATIVE_LIST_EMPTY_CACHE_TTL_SECONDS")
+    try:
+        value = int(raw) if raw is not None and str(raw).strip() != "" else 3600
+    except (TypeError, ValueError):
+        value = 3600
+    return max(60, min(value, 86400))
+
+
+def _realtime_local_asset_registry_path() -> Path:
+    raw = str(os.getenv("BARRY_REALTIME_LOCAL_ASSET_REGISTRY_FILE") or "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return (_shared_state_dir() / "realtime_local_asset_registry.json").resolve()
+
+
+def _realtime_local_asset_ttl_seconds() -> int:
+    raw = os.getenv("BARRY_REALTIME_LOCAL_ASSET_TTL_SECONDS")
+    try:
+        value = int(raw) if raw is not None and str(raw).strip() != "" else 604800
+    except (TypeError, ValueError):
+        value = 604800
+    return max(3600, min(value, 2592000))
 
 
 def _load_anchor_usage_state() -> dict[str, Any]:
@@ -302,7 +340,7 @@ def _build_realtime_candidates_from_records(
             inferred_app_id = _infer_app_id(record)
             official_match = _match_official_drama(title, inferred_app_id)
             record_candidates: list[dict[str, Any]] = []
-            if inferred_app_id and config.realtime_rank_external_first:
+            if inferred_app_id and official_match and config.realtime_rank_external_first:
                 external_lookup_state = {"count": external_lookup_failures}
                 record_candidates = _try_build_external_candidates(
                     record,
@@ -317,7 +355,7 @@ def _build_realtime_candidates_from_records(
                     candidate.pop("_external_lookup_failures", None)
             if not record_candidates and official_match and str(official_match.get("third_serial_id") or "").strip():
                 record_candidates = [_build_matched_candidate(record, official_match)]
-            if not record_candidates and inferred_app_id:
+            if not record_candidates and inferred_app_id and official_match:
                 external_lookup_state = {"count": external_lookup_failures}
                 record_candidates = _try_build_external_candidates(
                     record,
@@ -369,19 +407,28 @@ def _try_build_external_candidates(
 ) -> list[dict[str, Any]]:
     current_failures = int(external_lookup_failures_ref.get("count") or 0)
     title = str(record.get("playlet_search_name") or "").strip() or inferred_app_id
+    name_md5 = str(record.get("name_md5") or "").strip()
+    if not official_match:
+        return []
     if current_failures >= _REALTIME_EXTERNAL_LOOKUP_FAIL_LIMIT:
         return []
-    try:
-        external_assets = _fetch_external_video_assets(
-            str(record.get("name_md5") or "").strip(),
-            timeout=_external_video_lookup_timeout(timeout),
-        )
-    except Exception as exc:
-        external_lookup_failures_ref["count"] = current_failures + 1
-        _log_realtime_skip(
-            f"实时榜候选 {title} 获取 creative/list 失败，已跳过并继续下一条：{exc}"
-        )
-        return []
+    external_assets = _load_cached_local_external_assets(
+        name_md5=name_md5,
+        app_id=inferred_app_id,
+        official_match=official_match,
+    )
+    if not external_assets:
+        try:
+            external_assets = _fetch_external_video_assets(
+                name_md5,
+                timeout=_external_video_lookup_timeout(timeout),
+            )
+        except Exception as exc:
+            external_lookup_failures_ref["count"] = current_failures + 1
+            _log_realtime_skip(
+                f"实时榜候选 {title} 获取 creative/list 失败，已跳过并继续下一条：{exc}"
+            )
+            return []
     if not external_assets:
         return []
     candidates: list[dict[str, Any]] = []
@@ -409,6 +456,7 @@ def _try_build_external_candidates(
             duration_seconds=int(external_asset.get("duration_seconds") or 0),
             external_asset_key=str(external_asset.get("asset_key") or "").strip(),
             external_creative_ad_key=str(external_asset.get("creative_ad_key") or "").strip(),
+            cached_source_path=str(external_asset.get("local_path") or "").strip(),
         )
         candidate["_external_lookup_failures"] = int(external_lookup_failures_ref.get("count") or 0)
         candidates.append(candidate)
@@ -627,6 +675,157 @@ def _save_lookup_cache(
         "assets": assets,
     }
     _atomic_write_json(path, payload)
+
+
+def _load_realtime_local_asset_registry() -> dict[str, Any]:
+    path = _realtime_local_asset_registry_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    items = payload.get("items")
+    if not isinstance(items, dict):
+        items = {}
+    payload["items"] = items
+    return payload
+
+
+def _save_realtime_local_asset_registry(payload: dict[str, Any]) -> None:
+    normalized = {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "ttl_seconds": _realtime_local_asset_ttl_seconds(),
+        "items": payload.get("items") if isinstance(payload.get("items"), dict) else {},
+    }
+    _atomic_write_json(_realtime_local_asset_registry_path(), normalized)
+
+
+def _local_asset_registry_bucket_key(name_md5: str) -> str:
+    return str(name_md5 or "").strip().lower()
+
+
+def _parse_iso_datetime(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _valid_local_asset_entry(entry: dict[str, Any]) -> bool:
+    expires_at = _parse_iso_datetime(entry.get("expires_at"))
+    if expires_at is None or datetime.now(timezone.utc) >= expires_at:
+        return False
+    local_path = Path(str(entry.get("local_path") or "").strip()).expanduser()
+    try:
+        return local_path.exists() and local_path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _load_cached_local_external_assets(
+    *,
+    name_md5: str,
+    app_id: str,
+    official_match: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    bucket_key = _local_asset_registry_bucket_key(name_md5)
+    if not bucket_key:
+        return []
+    state = _load_realtime_local_asset_registry()
+    bucket = state.get("items", {}).get(bucket_key)
+    if not isinstance(bucket, list):
+        return []
+    valid_entries = [dict(item) for item in bucket if isinstance(item, dict) and _valid_local_asset_entry(item)]
+    if len(valid_entries) != len(bucket):
+        state.setdefault("items", {})[bucket_key] = valid_entries
+        _save_realtime_local_asset_registry(state)
+    if not valid_entries:
+        return []
+
+    matched_serial_id = str((official_match or {}).get("serial_id") or "").strip()
+    matched_task_id = str((official_match or {}).get("task_id") or "").strip()
+    normalized_app_id = str(app_id or "").strip().lower()
+
+    def _score(entry: dict[str, Any]) -> tuple[int, int, str]:
+        return (
+            1 if matched_serial_id and str(entry.get("matched_official_serial_id") or "").strip() == matched_serial_id else 0,
+            1 if matched_task_id and str(entry.get("matched_official_task_id") or "").strip() == matched_task_id else 0,
+            "1" if str(entry.get("app_id") or "").strip().lower() == normalized_app_id else "0",
+        )
+
+    ordered = sorted(valid_entries, key=_score, reverse=True)
+    assets: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for entry in ordered:
+        asset_key = str(entry.get("external_asset_key") or "").strip()
+        dedupe_key = asset_key or str(entry.get("video_url") or "").strip()
+        if not dedupe_key or dedupe_key in seen_keys:
+            continue
+        seen_keys.add(dedupe_key)
+        assets.append(
+            {
+                "video_url": str(entry.get("video_url") or "").strip(),
+                "duration_seconds": int(entry.get("duration_seconds") or 0),
+                "creative_ad_key": str(entry.get("external_creative_ad_key") or "").strip(),
+                "asset_key": asset_key,
+                "local_path": str(entry.get("local_path") or "").strip(),
+            }
+        )
+    return assets
+
+
+def register_realtime_local_asset(drama: dict[str, Any], *, source_path: str) -> None:
+    name_md5 = str(drama.get("realtime_name_md5") or "").strip()
+    video_url = str(drama.get("external_video_url") or "").strip()
+    local_path = str(source_path or "").strip()
+    if not name_md5 or not video_url or not local_path:
+        return
+    resolved_path = Path(local_path).expanduser().resolve()
+    try:
+        if not resolved_path.exists() or resolved_path.stat().st_size <= 0:
+            return
+    except OSError:
+        return
+
+    state = _load_realtime_local_asset_registry()
+    bucket_key = _local_asset_registry_bucket_key(name_md5)
+    items = state.setdefault("items", {})
+    bucket = items.get(bucket_key)
+    if not isinstance(bucket, list):
+        bucket = []
+    valid_bucket = [dict(item) for item in bucket if isinstance(item, dict) and _valid_local_asset_entry(item)]
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=_realtime_local_asset_ttl_seconds())
+    entry = {
+        "cached_at": datetime.now(timezone.utc).isoformat(),
+        "expires_at": expires_at.isoformat(),
+        "name_md5": name_md5,
+        "app_id": str(drama.get("app_id") or "").strip(),
+        "title": str(drama.get("title") or "").strip(),
+        "video_url": video_url,
+        "external_asset_key": str(drama.get("external_asset_key") or "").strip(),
+        "external_creative_ad_key": str(drama.get("external_creative_ad_key") or "").strip(),
+        "duration_seconds": int(drama.get("external_video_duration_seconds") or 0),
+        "matched_official_serial_id": str(drama.get("matched_official_serial_id") or "").strip(),
+        "matched_official_task_id": str(drama.get("matched_official_task_id") or "").strip(),
+        "local_path": str(resolved_path),
+    }
+
+    dedupe_key = entry["external_asset_key"] or entry["video_url"]
+    updated_bucket = [
+        dict(item)
+        for item in valid_bucket
+        if (str(item.get("external_asset_key") or "").strip() or str(item.get("video_url") or "").strip()) != dedupe_key
+    ]
+    updated_bucket.insert(0, entry)
+    items[bucket_key] = updated_bucket[:20]
+    _save_realtime_local_asset_registry(state)
 
 
 def _load_realtime_raw_hour_cache(*, target_publish_platforms: list[str]) -> list[dict[str, Any]] | None:
@@ -935,7 +1134,7 @@ def _fetch_external_video_assets(name_md5: str, *, timeout: float) -> list[dict[
         prefix="external-assets",
         identity=name_md5,
         assets=assets,
-        ttl_seconds=3600 if assets else 600,
+        ttl_seconds=_creative_list_success_ttl_seconds() if assets else _creative_list_empty_ttl_seconds(),
     )
     return assets
 
@@ -1095,6 +1294,7 @@ def _build_external_candidate(
     duration_seconds: int,
     external_asset_key: str,
     external_creative_ad_key: str,
+    cached_source_path: str = "",
 ) -> dict[str, Any]:
     title = str(record.get("playlet_search_name") or "").strip()
     name_md5 = str(record.get("name_md5") or "").strip()
@@ -1118,6 +1318,7 @@ def _build_external_candidate(
         "external_asset_key": normalized_asset_key,
         "external_creative_ad_key": str(external_creative_ad_key or "").strip(),
         "external_video_duration_seconds": max(0, int(duration_seconds or 0)),
+        "cached_source_path": str(cached_source_path or "").strip(),
         "external_estimated_output_count": _estimate_external_output_count(duration_seconds),
         "source_mode": "external_video",
         "candidate_fetch_source": "realtime_rank_external",
@@ -1623,7 +1824,7 @@ def _search_creative_list_assets(title: str, *, publish_platform: str, timeout: 
         prefix=f"creative-list-{normalized_platform}",
         identity=normalized_title,
         assets=assets,
-        ttl_seconds=3600 if assets else 900,
+        ttl_seconds=_creative_list_success_ttl_seconds() if assets else _creative_list_empty_ttl_seconds(),
     )
     return assets
 

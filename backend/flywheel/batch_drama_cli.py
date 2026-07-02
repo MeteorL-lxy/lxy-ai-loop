@@ -44,8 +44,10 @@ from flywheel.selection.realtime_rank_source import (
     fetch_creative_list_candidates,
     fetch_realtime_rank_candidates,
     mark_realtime_hour_exhausted,
+    register_realtime_local_asset,
 )
 from inbeidou_cli import get_tasks
+from loop_task_log_sync import maybe_sync_payload
 
 
 MODULE_ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -66,6 +68,38 @@ def _env_truthy(name: str, default: str = "0") -> bool:
     return str(os.getenv(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _now_ts() -> str:
+    return time.strftime("%F %T")
+
+
+def _stamp_item_timestamp(
+    items: list[dict],
+    key: str,
+    *,
+    when: str | None = None,
+    overwrite: bool = False,
+    predicate=None,
+) -> None:
+    stamp = str(when or _now_ts()).strip()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if callable(predicate) and not predicate(item):
+            continue
+        if overwrite or not str(item.get(key) or "").strip():
+            item[key] = stamp
+
+
+def _sync_task_log_snapshot(payload: dict, *, payload_path: Path | None, source: str) -> None:
+    try:
+        maybe_sync_payload(payload, payload_path=payload_path, source=source)
+    except Exception as exc:
+        _emit_status_line(
+            "task_log_sync_error",
+            {"source": source, "path": str(payload_path or ""), "error": str(exc)},
+        )
+
+
 def _write_progress_snapshot(payload: dict, *, stage: str, report_builder=None) -> None:
     path_text = str(os.getenv("BARRY_LOOP_PROGRESS_PATH") or "").strip()
     if not path_text:
@@ -82,6 +116,7 @@ def _write_progress_snapshot(payload: dict, *, stage: str, report_builder=None) 
         temp_path = path.with_suffix(f"{path.suffix}.tmp")
         temp_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         temp_path.replace(path)
+        _sync_task_log_snapshot(snapshot, payload_path=path, source=f"progress:{stage}")
     except Exception as exc:
         _emit_status_line(
             "progress_snapshot_error",
@@ -3292,17 +3327,26 @@ def _clip_batch_item(item: dict, args: argparse.Namespace, config) -> dict:
         if not media_url:
             raise RuntimeError("外部/官方 ffmpeg 素材缺少可下载 media_url")
         safe_title = re.sub(r"[\\\\/:*?\"<>|]+", "_", str(drama.get("title") or drama.get("serial_id") or "external")).strip() or "external"
-        raw_source_path = _external_source_cache_path(
-            output_dir=output_dir,
-            drama=drama,
-            video_url=media_url,
-            safe_title=safe_title,
-        )
-        downloaded_source = _ensure_remote_media_source(
-            video_url=media_url,
-            output_path=raw_source_path,
-        )
+        cached_source_hint = Path(str(drama.get("cached_source_path") or "").strip()).expanduser() if str(drama.get("cached_source_path") or "").strip() else None
+        if cached_source_hint and cached_source_hint.exists():
+            downloaded_source = _validate_downloaded_mp4_file(cached_source_hint.resolve())
+        else:
+            raw_source_path = _external_source_cache_path(
+                output_dir=output_dir,
+                drama=drama,
+                video_url=media_url,
+                safe_title=safe_title,
+            )
+            downloaded_source = _ensure_remote_media_source(
+                video_url=media_url,
+                output_path=raw_source_path,
+            )
         drama["cached_source_path"] = str(downloaded_source)
+        if source_mode == "external_video":
+            try:
+                register_realtime_local_asset(drama, source_path=str(downloaded_source))
+            except Exception:
+                pass
         clip_duration = clip_options.get("duration") or 90
         try:
             clip_duration_int = int(float(clip_duration))
@@ -4021,6 +4065,7 @@ def _batch_user_summary_zh(report: dict) -> str:
 
 def cmd_run_batch_drama(args) -> None:
     run_started_at = time.perf_counter()
+    run_started_wallclock = _now_ts()
     timings: dict[str, float] = {}
     config = load_config(args.config)
     ensure_runtime_dirs(config)
@@ -4317,4 +4362,9 @@ def cmd_run_batch_drama(args) -> None:
     )
     _set_failed_publish_state(failed_state)
     payload = _finalize_payload(payload)
+    final_json_path = Path(str(os.getenv("BARRY_LOOP_FINAL_JSON_PATH") or "").strip()).expanduser() if str(os.getenv("BARRY_LOOP_FINAL_JSON_PATH") or "").strip() else None
+    final_sync_payload = dict(payload)
+    final_sync_payload["progress_stage"] = "final"
+    final_sync_payload["progress_written_at"] = _now_ts()
+    _sync_task_log_snapshot(final_sync_payload, payload_path=final_json_path, source="final")
     print(json.dumps(payload, ensure_ascii=False, indent=2))

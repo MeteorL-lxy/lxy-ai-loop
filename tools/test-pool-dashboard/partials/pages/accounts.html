@@ -1,0 +1,81 @@
+<section class="panel account-health-hero">
+  <div class="section-head section-head-inline">
+    <div class="section-head-main">
+      <h2>账号健康监控</h2>
+      <span class="section-kicker">先按我的 loop 账号池试跑</span>
+    </div>
+    <span id="account-health-meta" class="section-meta-chip">正在加载账号健康数据...</span>
+  </div>
+  <div id="account-health-grid" class="metric-grid metric-grid-8"></div>
+</section>
+
+<section class="panel">
+  <div class="section-head section-head-inline">
+    <div class="section-head-main">
+      <h2>异常与建议</h2>
+      <span class="section-kicker">最近一次任务口径</span>
+    </div>
+  </div>
+  <div class="account-health-split">
+    <div>
+      <h3 class="subsection-title">失败原因 Top</h3>
+      <div id="account-error-list" class="reason-stack"></div>
+    </div>
+    <div>
+      <h3 class="subsection-title">账号池实时汇总</h3>
+      <div class="table-wrap account-health-pool-wrap">
+        <table class="data-table compact">
+          <thead>
+            <tr>
+              <th>账号池</th>
+              <th>账号</th>
+              <th>今日在用</th>
+              <th>闲置</th>
+              <th>不可发 Reels</th>
+              <th>今日任务</th>
+              <th>今日成功率</th>
+            </tr>
+          </thead>
+          <tbody id="account-pool-health-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="section-head section-head-inline">
+    <div class="section-head-main">
+      <h2>账号明细</h2>
+      <span class="section-kicker">授权 / 使用 / 闲置 / Reels 能力</span>
+    </div>
+    <div class="account-health-actions">
+      <select id="account-health-filter">
+        <option value="all">全部账号</option>
+        <option value="idle">闲置可用</option>
+        <option value="active">今日在用</option>
+        <option value="reels_blocked">不能发 Reels</option>
+        <option value="abnormal">异常账号</option>
+      </select>
+      <input id="account-health-search" type="text" placeholder="搜索账号 / social_id / agent_id / 账号池" />
+    </div>
+  </div>
+  <div class="table-wrap account-health-table-wrap">
+    <table class="data-table compact account-health-table">
+      <thead>
+        <tr>
+          <th>账号</th>
+          <th>账号池</th>
+          <th>状态</th>
+          <th>今日</th>
+          <th>7天</th>
+          <th>闲置</th>
+          <th>Reels</th>
+          <th>最近任务</th>
+          <th>建议</th>
+        </tr>
+      </thead>
+      <tbody id="account-health-tbody"></tbody>
+    </table>
+  </div>
+</section>

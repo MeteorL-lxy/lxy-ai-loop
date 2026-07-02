@@ -6,6 +6,7 @@ import { renderTopPlay } from "./modules/render-top-play.js";
 import { renderDailyTopHistory, renderHistory } from "./modules/render-history.js";
 import { renderLineCumulative } from "./modules/render-line-cumulative.js";
 import { renderAccountGroups } from "./modules/render-account-groups.js";
+import { renderAccountHealth, renderAccountHealthDetails } from "./modules/render-account-health.js";
 import { renderOptions } from "./modules/render-options.js";
 import { closeDrawer, loadRounds } from "./modules/rounds.js";
 import { ensureLayoutLoaded } from "./modules/layout.js";
@@ -78,6 +79,15 @@ async function loadTrendPanel({ refreshTrend = false } = {}) {
   }
 }
 
+async function loadAccountHealth() {
+  const payload = await fetchJson("./api/account-health/overview?scope=loop");
+  renderAccountHealth(payload);
+  qs("status-text").textContent = payload.available ? "已连接" : "配置待补";
+  qs("mode-text").textContent = payload.source?.readonly ? "账号健康只读" : "本地服务";
+  qs("db-path").textContent = payload.source?.database || qs("db-path").textContent || "-";
+  qs("last-updated").textContent = fmtDateTime(payload.last_updated);
+}
+
 async function loadCurrentPage(page = state.currentPage, { force = false } = {}) {
   switch (page) {
     case "home": {
@@ -90,6 +100,10 @@ async function loadCurrentPage(page = state.currentPage, { force = false } = {})
       state.pageLoaded.home = true;
       break;
     }
+    case "accounts":
+      await loadAccountHealth();
+      state.pageLoaded.accounts = true;
+      break;
     case "lines": {
       const { overview, failures } = await fetchRealtimeBundle({
         refresh: force,
@@ -154,6 +168,8 @@ async function refreshRealtimePanels() {
       qs("status-text").textContent = "已连接";
       qs("db-path").textContent = overview.db_path || qs("db-path").textContent || "-";
       qs("last-updated").textContent = fmtDateTime(overview.last_exported_at);
+    } else if (state.currentPage === "accounts") {
+      await loadAccountHealth();
     } else {
       qs("status-text").textContent = "已连接";
     }
@@ -187,6 +203,9 @@ function bindEvents() {
   qs("refresh-btn").addEventListener("click", () => {
     refreshAll({ force: true }).catch((error) => console.error(error));
   });
+
+  qs("account-health-filter").addEventListener("change", renderAccountHealthDetails);
+  qs("account-health-search").addEventListener("input", renderAccountHealthDetails);
 
   qs("search-btn").addEventListener("click", () => {
     state.page = 1;
